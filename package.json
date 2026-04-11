@@ -1,0 +1,12 @@
+{
+  "name": "finance-assistant-monorepo",
+  "version": "4.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "npx concurrently -c \"blue,green\" -n \"FRONTEND,BACKEND\" \"npm run dev -w frontend\" \"npm run dev -w backend\""
+  }
+}

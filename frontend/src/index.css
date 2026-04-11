@@ -1,0 +1,102 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+/* ── Default CSS Variables (Dark Night theme – overridden by JS) ── */
+:root {
+  --bg-base:        #080d1a;
+  --bg-surface:     #0f172a;
+  --bg-card:        rgba(15, 23, 42, 0.7);
+  --sidebar-bg:     #070b17;
+  --header-bg:      rgba(8, 13, 26, 0.85);
+  --border:         rgba(148, 163, 184, 0.1);
+  --border-hover:   rgba(148, 163, 184, 0.25);
+  --text-primary:   #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted:     #475569;
+  --primary:        #38bdf8;
+  --primary-glow:   rgba(56, 189, 248, 0.15);
+  --accent:         #818cf8;
+}
+
+/* ── Reset ── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
+  margin: 0;
+  min-height: 100vh;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-hover); border-radius: 99px; }
+
+/* ── Glass Card utility ── */
+.glass-card {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-radius: 1.25rem;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+.glass-card:hover {
+  border-color: var(--border-hover);
+}
+
+/* ── Sidebar item ── */
+.sidebar-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.875rem;
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.sidebar-item:hover {
+  color: var(--text-primary);
+  background: var(--border);
+}
+.sidebar-item.active {
+  color: var(--primary);
+  background: var(--primary-glow);
+}
+.sidebar-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--primary);
+  border-radius: 0 2px 2px 0;
+}
+
+/* ── Progress bar base ── */
+.progress-track {
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+/* ── Number gradient text ── */
+.text-gradient-cyan {
+  background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Light theme overrides for legibility ── */
+[data-theme="light-minimal"] .glass-card {
+  box-shadow: 0 2px 20px rgba(0,0,0,0.06);
+}

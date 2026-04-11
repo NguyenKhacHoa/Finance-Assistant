@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==============================
+// THIẾT KẾ CƠ SỞ DỮ LIỆU CỐT LÕI
+// ==============================
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  LUONG
+  TRANSFER
+}
+
+enum TransactionCategory {
+  Food
+  Entertainment
+  Utility
+  Education
+  Transport
+  Healthcare
+  Salary
+  Other
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String?
+  phone        String?  @unique
+  avatarUrl    String?
+  role         Role     @default(USER)
+  rewardPoints Int      @default(0)
+  loginStreak  Int      @default(0)
+  unallocatedBalance Decimal @default(0) // Số dư chưa phân bổ
+
+  // Auth
+  passwordHash   String?  // null nếu đăng ký bằng Google
+  googleId       String?  @unique
+  isVerified     Boolean  @default(false)
+  verifyToken    String?  // token xác thực email
+  verifyExpiry   DateTime?
+  resetToken     String?  // token đặt lại mật khẩu
+  resetExpiry    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pockets          Pocket[]
+  transactions     Transaction[]
+  survivalConfigs  SurvivalConfig[]
+  goals            SavingsGoal[]
+  badges           UserBadge[]
+  fixedExpenses    FixedExpense[]
+  pointLogs        PointLog[]
+}
+
+model FixedExpense {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  amount    Decimal
+  autoDeduct Boolean @default(true)
+  pocketId  String?
+  pocket    Pocket?  @relation(fields: [pocketId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+
+model Pocket {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  shortName   String?
+  percentage  Decimal
+  balance     Decimal  @default(0)
+  isEssential Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  transactions  Transaction[]
+  fixedExpenses FixedExpense[]
+}
+
+model Transaction {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pocketId    String?
+  pocket      Pocket?  @relation(fields: [pocketId], references: [id], onDelete: Cascade)
+  amount      Decimal
+  type        TransactionType
+  title       String
+  category    TransactionCategory
+  encryptedData String? // IV + Tag + Ciphertext
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  
+  goalId      String?
+  goal        SavingsGoal? @relation(fields: [goalId], references: [id])
+}
+
+model SurvivalConfig {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isActive           Boolean  @default(false)
+  triggerThreshold   Decimal  @default(2000000)
+  disableNonEssential Boolean @default(true)
+  updatedAt          DateTime @updatedAt
+}
+
+// ==============================
+// GAMIFICATION MODULE
+// ==============================
+
+model SavingsGoal {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetAmount  Decimal
+  currentAmount Decimal  @default(0)
+  deadline      DateTime
+  status        String   @default("ACTIVE") // ACTIVE, COMPLETED, FAILED
+  title         String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  transactions  Transaction[]
+}
+
+model Badge {
+  id             String   @id @default(uuid())
+  name           String   @unique
+  description    String
+  icon           String
+  requiredPoints Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  users          UserBadge[]
+}
+
+model UserBadge {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badgeId   String
+  badge     Badge    @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+  awardedAt DateTime @default(now())
+
+  @@unique([userId, badgeId])
+}
+model PointLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  delta     Int      // + tăng, - giảm
+  reason    String   // mô tả lý do
+  createdAt DateTime @default(now())
+}
