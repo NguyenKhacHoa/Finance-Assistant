@@ -1,4 +1,5 @@
 import { Controller, Post, Body, Param, Headers, UnauthorizedException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { BankIntegrationService } from './bank-integration.service';
 
 interface WebhookPayload {
@@ -11,7 +12,10 @@ interface WebhookPayload {
 
 @Controller('webhooks/bank-handler')
 export class BankIntegrationController {
-  constructor(private readonly bankIntegrationService: BankIntegrationService) {}
+  constructor(
+    private readonly bankIntegrationService: BankIntegrationService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Post(':webhookToken')
   async handleWebhook(
@@ -21,7 +25,7 @@ export class BankIntegrationController {
     @Body() payload: WebhookPayload,
   ) {
     // Basic verification - checking if request contains expected signature/token
-    const expectedToken = process.env.WEBHOOK_SECURE_TOKEN;
+    const expectedToken = this.configService.get<string>('WEBHOOK_SECURE_TOKEN');
     if (expectedToken && secureToken !== expectedToken && apiKey !== expectedToken) {
       throw new UnauthorizedException('Invalid secure-token or API key');
     }

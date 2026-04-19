@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { PocketsModule } from './pockets/pockets.module';
 import { AiModule } from './ai/ai.module';
@@ -13,6 +14,10 @@ import { BankIntegrationModule } from './bank-integration/bank-integration.modul
 
 @Module({
   imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+    BankIntegrationModule,
     PrismaModule,
     AuthModule,
     PocketsModule,
