@@ -19,6 +19,8 @@ import { AiService } from './ai.service';
 import { JwtGuard } from '../auth/jwt.guard';
 import { OcrReceiptDto } from './dto/ocr.dto';
 import { PredictBrokeDayDto } from './dto/predict.dto';
+import { AnalyzeFinanceDto } from './dto/analyze.dto';
+
 
 // ─────────────────────────────────────────────
 // Helper: convert multipart file buffer → Base64
@@ -229,8 +231,69 @@ export class AiController {
   }
 
   // ══════════════════════════════════════════════════════════
+  //  POST /ai/analyze  – Phân tích sức khỏe tài chính toàn diện
+  // ══════════════════════════════════════════════════════════
+  /**
+   * Phân tích sức khỏe tài chính tháng hiện tại của user.
+   *
+   * Input: Snapshot thu nhập + từng hũ (budget, spent, balance trong tháng).
+   * Output:
+   *   - analysis  : Văn bản phân tích tiếng Việt từ AI (persona ARIA)
+   *   - alerts    : Mảng chuỗi cảnh báo ngắn gọn cho Frontend hiển thị badge
+   *   - forecast  : Map số học (surplus, saving rate, burn rate...) cho chart/widget
+   *
+   * Body (AnalyzeFinanceDto):
+   * {
+   *   "totalIncome":        15000000,
+   *   "currentDayOfMonth":  19,
+   *   "totalDaysInMonth":   30,
+   *   "pockets": [
+   *     {
+   *       "id":                "uuid-...",
+   *       "name":              "Nhu cầu thiết yếu",
+   *       "targetPercentage":  50,
+   *       "monthlyBudget":     7500000,
+   *       "spentThisMonth":    4200000,
+   *       "currentBalance":    3300000
+   *     },
+   *     ...
+   *   ],
+   *   "userQuestion": "Tôi có nên mua điện thoại mới tháng này không?" // optional
+   * }
+   */
+  @Post('analyze')
+  async analyzeFinancialHealth(@Req() req: any, @Body() body: AnalyzeFinanceDto) {
+    const userId: string = req.user?.sub;
+
+    if (!body.pockets?.length) {
+      throw new BadRequestException('Cần cung cấp ít nhất 1 hũ tài chính để phân tích.');
+    }
+    if (!body.totalIncome || body.totalIncome <= 0) {
+      throw new BadRequestException('Tổng thu nhập phải lớn hơn 0.');
+    }
+
+    this.logger.log(
+      `[ANALYZE] userId=${userId} | income=${body.totalIncome} | day=${body.currentDayOfMonth}/${body.totalDaysInMonth} | pockets=${body.pockets.length}`,
+    );
+
+    const result = await this.aiService.analyzeFinancialHealth(userId, {
+      totalIncome:       body.totalIncome,
+      currentDayOfMonth: body.currentDayOfMonth,
+      totalDaysInMonth:  body.totalDaysInMonth,
+      pockets:           body.pockets,
+      userQuestion:      body.userQuestion,
+    });
+
+    return {
+      success: true,
+      ...result,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════
   //  POST /ai/chat  – Chat với Trợ lý AI có ngữ cảnh DB thật
   // ══════════════════════════════════════════════════════════
+
   /**
    * Nhắn tin với trợ lý AI tài chính cá nhân.
    * Tự động nạp dữ liệu Ví, Giao dịch 30 ngày, Mục tiêu tiết kiệm

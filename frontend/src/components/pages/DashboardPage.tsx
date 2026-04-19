@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
-import DashboardGreeting from './dashboard/DashboardGreeting';
-import FintechStatsGrid from './dashboard/FintechStatsGrid';
-import FinancialChartBlock from './dashboard/FinancialChartBlock';
+import DashboardGreeting from '../dashboard/DashboardGreeting';
+import FintechStatsGrid from '../dashboard/FintechStatsGrid';
+import FinancialChartBlock from '../dashboard/FinancialChartBlock';
 
 export default function DashboardPage() {
   return (

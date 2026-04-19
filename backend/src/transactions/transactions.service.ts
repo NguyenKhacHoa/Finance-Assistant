@@ -50,24 +50,44 @@ export class TransactionsService {
   }
 
   // ── GET chart data (income/expense grouped by day) ────────────
+  // Timezone: Asia/Ho_Chi_Minh (UTC+7)
   async getChartData(userId: string, days: number = 7) {
-    const since = new Date(Date.now() - days * 86_400_000);
-    since.setHours(0, 0, 0, 0);
+    const TZ = 'Asia/Ho_Chi_Minh';
+    const VN_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7
+
+    // Helper: convert a UTC Date → "YYYY-MM-DD" in VN timezone
+    const toVnDateKey = (utcDate: Date): string => {
+      const vnMs = utcDate.getTime() + VN_OFFSET_MS;
+      return new Date(vnMs).toISOString().slice(0, 10);
+    };
+
+    // "Today" midnight in VN time expressed as UTC midnight-equivalent
+    const nowVnMs = Date.now() + VN_OFFSET_MS;
+    const todayVnMidnightMs = nowVnMs - (nowVnMs % 86_400_000); // floor to day
+
+    // Start of range = today (VN) - (days-1) days → includes today as the LAST entry
+    const startVnMidnightMs = todayVnMidnightMs - (days - 1) * 86_400_000;
+
+    // Equivalent UTC Date for DB query  (midnight VN = 17:00 previous day UTC)
+    const sinceUtc = new Date(startVnMidnightMs - VN_OFFSET_MS);
 
     const txs = await this.prisma.transaction.findMany({
-      where: { userId, createdAt: { gte: since } },
+      where: { userId, createdAt: { gte: sinceUtc } },
       select: { amount: true, type: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
 
+    // Pre-fill every day in range with zeros (Mon-first week ordering preserved by chronological sort)
     const dayMap = new Map<string, { income: number; expense: number }>();
     for (let i = 0; i < days; i++) {
-      const d = new Date(since.getTime() + i * 86_400_000);
-      dayMap.set(d.toISOString().slice(0, 10), { income: 0, expense: 0 });
+      const vnDayMs = startVnMidnightMs + i * 86_400_000;
+      const key = new Date(vnDayMs).toISOString().slice(0, 10); // still "YYYY-MM-DD"
+      dayMap.set(key, { income: 0, expense: 0 });
     }
 
+    // Map each transaction to its VN local date key
     for (const tx of txs) {
-      const key = tx.createdAt.toISOString().slice(0, 10);
+      const key = toVnDateKey(tx.createdAt);
       const entry = dayMap.get(key) ?? { income: 0, expense: 0 };
       if (tx.type === 'INCOME' || tx.type === 'LUONG') entry.income += Number(tx.amount);
       else if (tx.type === 'EXPENSE') entry.expense += Number(tx.amount);
@@ -75,16 +95,13 @@ export class TransactionsService {
     }
 
     return Array.from(dayMap.entries()).map(([date, vals]) => {
-      const d = new Date(date);
-      const label = days <= 7
-        ? d.toLocaleDateString('vi-VN', { weekday: 'short' })
-        : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
-      return {
-        date,
-        label,
-        income: vals.income,
-        expense: vals.expense,
-      };
+      // Build label using VN locale + explicit timezone
+      const d = new Date(date + 'T00:00:00+07:00');
+      const isWeek = days <= 7;
+      const label = isWeek
+        ? d.toLocaleDateString('vi-VN', { weekday: 'short', timeZone: TZ })
+        : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', timeZone: TZ });
+      return { date, label, income: vals.income, expense: vals.expense };
     });
   }
 

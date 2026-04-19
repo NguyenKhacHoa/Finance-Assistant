@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 import {
   Mail, Lock, Eye, EyeOff, ArrowRight, User,
   Sparkles, TrendingUp, Shield, Zap, CheckCircle, RefreshCw, Smartphone, KeyRound

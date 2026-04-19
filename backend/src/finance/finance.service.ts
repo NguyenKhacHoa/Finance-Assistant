@@ -72,90 +72,247 @@ export class FinanceService {
     }, 4);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CORE PRIVATE: distributeIncomeToPockets
+  // ═══════════════════════════════════════════════════════════════════════════
   /**
-   * Phân bổ lương vào các hũ theo quy trình chuẩn kế toán:
+   * Tính toán chính xác số tiền phân bổ vào từng hũ theo tỷ lệ phần trăm.
    *
-   * B1. Trừ chi phí cố định ra khỏi tổng lương → còn `distributable`
-   * B2. Phân bổ `allocations` (do User/AI đề xuất) vào từng hũ
-   * B3. Phần tiền thừa (do % hũ < 100%) → tự động vào hũ Thiết Yếu
-   * B4. Chi phí cố định → nạp thẳng vào hũ được liên kết (hoặc hũ Thiết Yếu)
+   * ⚠️  Vấn đề cần giải quyết: Floating-point rounding errors
+   * ──────────────────────────────────────────────────────────
+   * Ví dụ nguy hiểm: totalAmount = 10,000,000 với 3 hũ (33.33%, 33.33%, 33.34%)
+   *   Naive (Math.round):
+   *     Hũ A = Math.round(10,000,000 * 0.3333) = 3,333,000
+   *     Hũ B = Math.round(10,000,000 * 0.3333) = 3,333,000
+   *     Hũ C = Math.round(10,000,000 * 0.3334) = 3,334,000
+   *     Total = 10,000,000  ← Tình cờ đúng, nhưng không đảm bảo mọi trường hợp
    *
-   * Kết quả: 100% lương hạch toán vào hệ thống, không đồng nào mất.
+   * Thuật toán: Largest Remainder Method (Hamilton Method) — Chuẩn kế toán
+   * ────────────────────────────────────────────────────────────────────────
+   *   1. Tính exact share cho từng hũ: exact_i = totalAmount * (pct_i / 100)
+   *   2. Lấy floor của từng exact_i → floor_i (phần nguyên an toàn)
+   *   3. Xác định số đơn vị dư: remainingUnits = totalAmount - SUM(floor_i)
+   *   4. Sắp xếp hũ theo phần thập phân giảm dần
+   *   5. Cộng thêm 1 đơn vị (1 VNĐ) lần lượt cho các hũ đứng đầu
+   *   → Đảm bảo: SUM(allocatedAmount_i) === totalAmount (tuyệt đối)
+   *
+   * @param totalAmount  Tổng số tiền (VNĐ, phải là số nguyên dương)
+   * @param pockets      Mảng { id, name, percentage } — percentage: 0–100
+   * @returns            Mảng { pocketId, name, percentage, allocatedAmount }
+   *                     đảm bảo SUM(allocatedAmount) === totalAmount
+   */
+  private distributeIncomeToPockets(
+    totalAmount: number,
+    pockets: { id: string; name: string; percentage: number }[],
+  ): { pocketId: string; name: string; percentage: number; allocatedAmount: number }[] {
+    // ── Bước 0: Validate ──────────────────────────────────────────────────
+    if (!Number.isInteger(totalAmount) || totalAmount <= 0) {
+      throw new BadRequestException(
+        `Số tiền không hợp lệ: ${totalAmount}. Phải là số nguyên dương (VNĐ).`,
+      );
+    }
+    if (pockets.length === 0) {
+      throw new BadRequestException('Không có hũ nào được cấu hình để phân bổ.');
+    }
+
+    // ── Bước 1: Normalize % nếu tổng ≠ 100 ───────────────────────────────
+    const totalPercentage = pockets.reduce((sum, p) => sum + p.percentage, 0);
+    if (Math.abs(totalPercentage - 100) > 0.01) {
+      this.logger.warn(
+        `[distributeIncomeToPockets] Tổng % = ${totalPercentage} ≠ 100. Normalize để phân bổ toàn bộ ${totalAmount}.`,
+      );
+    }
+    // normFactor đảm bảo dù tổng % là bao nhiêu, ta vẫn phân bổ đúng 100% totalAmount
+    const normFactor = totalPercentage > 0 ? 100 / totalPercentage : 1;
+
+    // ── Bước 2: Tính exact share ─────────────────────────────────────────
+    const exactAmounts = pockets.map((p) => ({
+      pocketId: p.id,
+      name: p.name,
+      percentage: p.percentage,
+      exactAmount: totalAmount * ((p.percentage * normFactor) / 100),
+    }));
+
+    // ── Bước 3: Floor → phần nguyên ──────────────────────────────────────
+    const floored = exactAmounts.map((item) => ({
+      ...item,
+      allocatedAmount: Math.floor(item.exactAmount),
+      // Phần thập phân quyết định ai được nhận 1 đồng dư
+      remainder: item.exactAmount - Math.floor(item.exactAmount),
+    }));
+
+    // ── Bước 4: Largest Remainder Method ─────────────────────────────────
+    const totalFloored = floored.reduce((sum, item) => sum + item.allocatedAmount, 0);
+    const remainingUnits = totalAmount - totalFloored; // số đồng dư cần phân phối
+
+    // Sắp xếp: remainder lớn nhất nhận thêm 1 đồng trước
+    const sorted = [...floored].sort((a, b) => b.remainder - a.remainder);
+    for (let i = 0; i < remainingUnits; i++) {
+      sorted[i % sorted.length].allocatedAmount += 1;
+    }
+
+    // ── Bước 5: Assertion bảo vệ – không bao giờ được sai ────────────────
+    const finalTotal = sorted.reduce((sum, item) => sum + item.allocatedAmount, 0);
+    if (finalTotal !== totalAmount) {
+      throw new Error(
+        `[FATAL] Lỗi kế toán: Tổng phân bổ ${finalTotal} ≠ ${totalAmount}. ` +
+        `Báo cáo ngay cho kỹ thuật để kiểm tra.`,
+      );
+    }
+
+    this.logger.log(
+      `[distributeIncomeToPockets] ${totalAmount.toLocaleString()} VNĐ → ` +
+      sorted.map((s) => `${s.name}: ${s.allocatedAmount.toLocaleString()} (${s.percentage}%)`).join(' | '),
+    );
+
+    // Trả về theo thứ tự input gốc để output nhất quán
+    const resultMap = new Map(sorted.map((s) => [s.pocketId, s]));
+    return pockets.map((p) => resultMap.get(p.id)!);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PUBLIC: distributeSalary
+  // ═══════════════════════════════════════════════════════════════════════════
+  /**
+   * Phân bổ lương vào các hũ theo quy trình chuẩn kế toán.
+   *
+   * ⚡ Bảo mật quan trọng:
+   *   - `allocations` từ client CHỈ dùng để xác định pocketId nào tham gia.
+   *   - Trường `amount` từ client bị BỎ QUA hoàn toàn.
+   *   - Mọi amount đều được tính lại server-side từ `percentage` trong DB.
+   *   → Đây là fix cho bug: client gửi amount = totalAmount cho hũ 50%.
+   *
+   * Quy trình:
+   *   B1. Lấy hũ từ DB (source of truth cho percentage)
+   *   B2. Gọi distributeIncomeToPockets() → amount chính xác từng hũ
+   *   B3. Atomic transaction: cập nhật balance + tạo transaction records
+   *   B4. Surplus (% tổng < 100%) → unallocatedBalance
+   *   B5. Chi phí cố định autoDeduct → EXPENSE transaction
    */
   async distributeSalary(
     userId: string,
     totalAmount: number,
-    allocations: { pocketId: string, amount: number }[] = []
+    allocations: { pocketId: string; amount: number }[] = [],
   ) {
-    this.logger.log(`[distributeSalary] Bắt đầu phân bổ ${totalAmount} cho user ${userId}`);
+    // ── Validate & normalize totalAmount ─────────────────────────────────
+    const safeTotal = Math.round(totalAmount);
+    if (safeTotal <= 0) {
+      throw new BadRequestException('Số tiền lương phải lớn hơn 0 VNĐ.');
+    }
+    this.logger.log(`[distributeSalary] Bắt đầu phân bổ ${safeTotal.toLocaleString()} VNĐ cho user ${userId}`);
 
+    // ── Lấy hũ từ DB (source of truth) ───────────────────────────────────
+    const allPockets = await this.prisma.pocket.findMany({
+      where: { userId },
+      select: { id: true, name: true, percentage: true },
+    });
+    if (allPockets.length === 0) {
+      throw new BadRequestException('Bạn chưa thiết lập hũ tài chính.');
+    }
+
+    // ── Xác định hũ tham gia phân bổ ─────────────────────────────────────
+    // Nếu client gửi allocations → chỉ phân bổ vào các pocketId đó
+    // Nếu không → phân bổ toàn bộ hũ của user
+    let targetPockets: { id: string; name: string; percentage: number }[];
+
+    if (allocations && allocations.length > 0) {
+      const requestedIds = new Set(allocations.map((a) => a.pocketId));
+      targetPockets = allPockets
+        .filter((p) => requestedIds.has(p.id))
+        .map((p) => ({ id: p.id, name: p.name, percentage: Number(p.percentage) }));
+
+      if (targetPockets.length === 0) {
+        throw new BadRequestException('Không tìm thấy hũ hợp lệ trong danh sách phân bổ.');
+      }
+    } else {
+      targetPockets = allPockets.map((p) => ({
+        id: p.id,
+        name: p.name,
+        percentage: Number(p.percentage),
+      }));
+    }
+
+    // ── Tính phân bổ chính xác (Largest Remainder Method) ─────────────────
+    const distributions = this.distributeIncomeToPockets(safeTotal, targetPockets);
+
+    // ── Atomic Prisma Transaction ──────────────────────────────────────────
     const result = await this.prisma.$transaction(async (tx) => {
       const updatedPockets: any[] = [];
       let totalAllocated = 0;
+      const txTimestamp = new Date(); // timestamp thống nhất cho cả batch
 
-      // ── B1: Phân bổ theo chỉ định từ Frontend (allocations) ───────────────
-      if (allocations && allocations.length > 0) {
-        for (const alloc of allocations) {
-          if (!alloc.amount || alloc.amount <= 0) continue;
-          
-          const updated = await tx.pocket.update({
-            where: { id: alloc.pocketId },
-            data: { balance: { increment: alloc.amount } },
-          });
-          updatedPockets.push(updated);
-          totalAllocated += alloc.amount;
+      // ── B1: Nạp tiền vào từng hũ ───────────────────────────────────────
+      for (const dist of distributions) {
+        if (dist.allocatedAmount <= 0) continue; // bỏ qua hũ 0%
 
-          await tx.transaction.create({
-            data: {
-              userId,
-              pocketId: alloc.pocketId,
-              amount: alloc.amount,
-              type: 'INCOME',
-              title: `Phân bổ lương → ${updated.name}`,
-              category: 'Salary',
+        const updated = await tx.pocket.update({
+          where: { id: dist.pocketId },
+          data: { balance: { increment: dist.allocatedAmount } },
+        });
+        updatedPockets.push(updated);
+        totalAllocated += dist.allocatedAmount;
+
+        await tx.transaction.create({
+          data: {
+            userId,
+            pocketId: dist.pocketId,
+            amount: dist.allocatedAmount,
+            type: 'INCOME',
+            title: `Phân bổ lương → ${dist.name} (${dist.percentage}%)`,
+            category: 'Salary',
+            createdAt: txTimestamp,
+            metadata: {
+              source: 'salary_distribution',
+              originalTotal: safeTotal,
+              percentage: dist.percentage,
+              allocatedAmount: dist.allocatedAmount,
             },
-          });
-        }
+          },
+        });
       }
 
-      // ── B2: Tiền chưa phân bổ (Số dư lương còn lại) ───────────────────────
-      const surplus = Math.max(0, totalAmount - totalAllocated);
+      // ── B2: Surplus → unallocatedBalance (khi tổng % < 100%) ──────────
+      const surplus = Math.max(0, safeTotal - totalAllocated);
+      const targetTotal = targetPockets.reduce((s, p) => s + p.percentage, 0);
       if (surplus > 0) {
+        this.logger.log(`[distributeSalary] Surplus: ${surplus.toLocaleString()} VNĐ → unallocatedBalance`);
         await tx.transaction.create({
           data: {
             userId,
             pocketId: null,
             amount: surplus,
             type: 'INCOME',
-            title: `Lương chưa phân bổ (Tiền ngoài hũ)`,
+            title: `Lương chưa phân bổ (${(100 - targetTotal).toFixed(2)}% còn lại)`,
             category: 'Salary',
+            createdAt: txTimestamp,
+            metadata: { source: 'salary_surplus', surplusAmount: surplus },
           },
         });
       }
 
-      // ── B3: Xử lý Chi phí cố định (Auto-Deduct từ Quỹ Tổng) ───────────────
+      // ── B3: Auto-Deduct chi phí cố định ───────────────────────────────
       const fixedExpenses = await tx.fixedExpense.findMany({ where: { userId } });
-      const totalFixed = fixedExpenses.filter(fe => fe.autoDeduct).reduce((sum, fe) => sum + Number(fe.amount), 0);
+      const totalFixed = fixedExpenses
+        .filter((fe) => fe.autoDeduct)
+        .reduce((sum, fe) => sum + Number(fe.amount), 0);
 
       for (const fe of fixedExpenses) {
         if (!fe.autoDeduct) continue;
-        
         await tx.transaction.create({
           data: {
             userId,
-            pocketId: null, // Trừ thẳng từ tổng tài sản (ngoài hũ)
+            pocketId: null,
             amount: Number(fe.amount),
             type: 'EXPENSE',
             title: `Tự động thanh toán phí cố định: ${fe.title}`,
             category: 'Utility',
+            createdAt: txTimestamp,
           },
         });
       }
 
-      // ── B4: Tính toán Unallocated Balance ròng ────────────────────────────
-      // Tiền chưa phân bổ mới = Tiền dư từ phân bổ (surplus) - Tổng chi phí cố định
+      // ── B4: Cập nhật unallocatedBalance ròng ──────────────────────────
       const unallocatedChange = surplus - totalFixed;
-      
       await (tx as any).user.update({
         where: { id: userId },
         data: { unallocatedBalance: { increment: unallocatedChange } },
@@ -164,19 +321,29 @@ export class FinanceService {
       return {
         success: true,
         message: 'Phân bổ lương thành công',
+        timestamp: txTimestamp.toISOString(),
         breakdown: {
-          totalSalary: totalAmount,
-          fixedExpensesDeducted: totalFixed,
-          allocated: totalAllocated,
+          totalSalary: safeTotal,
+          totalAllocated,
           surplus,
+          fixedExpensesDeducted: totalFixed,
           unallocatedChange,
+          distributions: distributions.map((d) => ({
+            pocketId: d.pocketId,
+            name: d.name,
+            percentage: d.percentage,
+            allocatedAmount: d.allocatedAmount,
+          })),
         },
         updatedPockets,
       };
     });
 
-    // Award 100 points
-    const newlyUnlocked = await this.gamification.awardPoints(userId, 100, 'Phân bổ lương vào các hũ tài chính');
+    // ── Gamification ───────────────────────────────────────────────────────
+    const newlyUnlocked = await this.gamification.awardPoints(
+      userId, 100, 'Phân bổ lương vào các hũ tài chính',
+    );
+
     return { ...result, newlyUnlocked };
   }
 }

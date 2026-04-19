@@ -4,8 +4,8 @@ import {
   Target, Trophy, Star, Zap, Award, Plus, ChevronRight,
   Clock, PiggyBank, Camera, History, Medal,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
-import { formatVND } from '../utils/format';
+import { useAuth } from '../../context/AuthContext';
+import { formatVND } from '../../utils/format';
 
 // ── icon mapping dùng chung ────────────────────────────────────────
 function badgeIcon(icon: string, cls = 'w-6 h-6') {

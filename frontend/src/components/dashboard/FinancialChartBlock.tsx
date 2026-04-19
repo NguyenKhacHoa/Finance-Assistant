@@ -7,15 +7,11 @@ import {
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { formatVND } from '../../utils/format';
+import { generateChartData, type ChartPoint } from '../../utils/chartDataUtils';
 
-interface ChartPoint {
-  date: string;
-  label: string;
-  income: number;
-  expense: number;
-}
+// ChartPoint is imported from chartDataUtils
 
-const FILTERS = [
+const FILTERS: { label: string; period: '7d' | '1m' }[] = [
   { label: '7 ngày', period: '7d' },
   { label: '1 tháng', period: '1m' },
 ];
@@ -41,8 +37,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 
 export default function FinancialChartBlock() {
   const { token } = useAuth();
-  const [activeFilter, setActiveFilter] = useState('7d');
-  const [data, setData] = useState<ChartPoint[]>([]);
+  const [activeFilter, setActiveFilter] = useState<'7d' | '1m'>('7d');
+  // Initialize with zero-filled skeleton so the X-axis never lags behind
+  const [data, setData] = useState<ChartPoint[]>(() => generateChartData([], '7d'));
   const [loading, setLoading] = useState(true);
 
   const fetchChart = async () => {
@@ -52,11 +49,17 @@ export default function FinancialChartBlock() {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
-        const json = await res.json();
-        setData(json);
+        const json: ChartPoint[] = await res.json();
+        // Client-side safety net: merge with zero-filled range ending at TODAY (VN time)
+        // Ensures chart always shows up-to-the-minute date even if backend lags
+        setData(generateChartData(json, activeFilter));
+      } else {
+        // On API error, still render a zero-filled range ending at today
+        setData(generateChartData([], activeFilter));
       }
     } catch (e) {
       console.error('[FinancialChartBlock] fetch error:', e);
+      setData(generateChartData([], activeFilter));
     } finally {
       setLoading(false);
     }
