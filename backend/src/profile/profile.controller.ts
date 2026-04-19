@@ -56,4 +56,16 @@ export class ProfileController {
     const userId = req.user.sub;
     return this.profileService.deleteAccount(userId);
   }
+
+  @Post('unlink-bank')
+  async unlinkBank(@Req() req: any) {
+    const userId = req.user.sub;
+    return this.profileService.unlinkBank(userId);
+  }
+
+  @Get('webhook-info')
+  async getWebhookInfo(@Req() req: any) {
+    const userId = req.user.sub;
+    return this.profileService.getWebhookInfo(userId);
+  }
 }

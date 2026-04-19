@@ -78,69 +78,79 @@ export class PocketsService {
     return this.getUserPockets(userId);
   }
 
-  // Logic phân bổ thu nhập (Lương) vào 6 hũ
+  // Logic phân bổ thu nhập (Lương) vào 6 hũ — Largest Remainder Method
   async distributeIncome(userId: string, totalAmount: number) {
     if (totalAmount <= 0) {
       throw new BadRequestException('Số tiền thu nhập phải lớn hơn 0');
     }
 
+    // Làm tròn về số nguyên (loại bỏ xu lẻ phát sinh từ client)
+    const safeTotal = Math.round(totalAmount);
+
     let pockets = await this.getUserPockets(userId);
-    
+
     // Nếu user chưa có hũ nào, tự động khởi tạo theo quy tắc chuẩn
     if (pockets.length === 0) {
       pockets = await this.initializeDefaultPockets(userId);
     }
 
-    // Kiểm tra tổng % có bằng 100% không để đề phòng lỗi logic từ người dùng
+    // Kiểm tra tổng % có bằng 100% không
     const totalPercentage = pockets.reduce((acc, pocket) => acc + Number(pocket.percentage), 0);
     if (Math.abs(totalPercentage - 100) > 0.01) {
       throw new BadRequestException('Tổng tỷ lệ các hũ phải bằng 100%');
     }
 
-    // Sử dụng Prisma Transaction để đảm bảo tính ACID
-    // Nếu cập nhật 1 hũ lỗi, toàn bộ process sẽ rollback
-    const transactions = [];
+    // ── Largest Remainder Method ──────────────────────────────────────────
+    // Đảm bảo SUM(allocations) === safeTotal, không thừa thiếu 1 đồng
+    // normFactor = 1 vì đã validate tổng = 100%, nhưng giữ để an toàn
+    const normFactor = totalPercentage > 0 ? 100 / totalPercentage : 1;
 
-    // 1. Tạo Transaction kỷ lục cho thu nhập tổng hợp
-    // Lấy hũ đầu tiên để làm pocketId tham chiếu cho bản ghi tổng thu nhập
-    const firstPocketId = pockets[0]?.id;
-    if (firstPocketId) {
-      transactions.push(
-        this.prisma.transaction.create({
-          data: {
-            userId,
-            pocketId: firstPocketId,
-            type: 'INCOME',
-            amount: new Prisma.Decimal(totalAmount),
-            title: 'Nhận Thu Nhập Chờ Phân Bổ',
-            category: 'Salary',
-          },
-        })
-      );
+    const working = pockets.map((pocket) => {
+      const exactAmount = safeTotal * ((Number(pocket.percentage) * normFactor) / 100);
+      return {
+        id: pocket.id,
+        exactAmount,
+        allocatedAmount: Math.floor(exactAmount),
+        remainder: exactAmount - Math.floor(exactAmount),
+      };
+    });
+
+    const totalFloored = working.reduce((s, w) => s + w.allocatedAmount, 0);
+    const leftover = safeTotal - totalFloored;
+
+    // Cộng +1 cho các hũ có phần thập phân lớn nhất
+    const sorted = [...working].sort((a, b) => b.remainder - a.remainder);
+    for (let i = 0; i < leftover; i++) {
+      sorted[i % sorted.length].allocatedAmount += 1;
     }
 
-    // 2. Tính toán và cộng tiền vào từng hũ
-    for (const pocket of pockets) {
-      const allocation = (totalAmount * Number(pocket.percentage)) / 100;
-      
-      transactions.push(
-        this.prisma.pocket.update({
+    // Assertion — không bao giờ được sai
+    const finalCheck = sorted.reduce((s, w) => s + w.allocatedAmount, 0);
+    if (finalCheck !== safeTotal) {
+      throw new Error(`[FATAL] Lỗi kế toán: tổng phân bổ ${finalCheck} ≠ ${safeTotal}`);
+    }
+
+    // Khôi phục thứ tự gốc theo pockets
+    const allocMap = new Map(sorted.map((w) => [w.id, w.allocatedAmount]));
+
+    // ── Atomic Prisma Transaction ─────────────────────────────────────────
+    await this.prisma.$transaction(
+      pockets.map((pocket) => {
+        const amount = allocMap.get(pocket.id) ?? 0;
+        return this.prisma.pocket.update({
           where: { id: pocket.id },
           data: {
-            balance: {
-              increment: new Prisma.Decimal(allocation),
-            },
+            balance: { increment: new Prisma.Decimal(amount) },
           },
-        })
-      );
-    }
-
-    await this.prisma.$transaction(transactions);
+        });
+      }),
+    );
 
     return {
       message: 'Đã phân bổ thành công!',
-      distributedAmount: totalAmount,
+      distributedAmount: safeTotal,
       updatedPockets: await this.getUserPockets(userId),
     };
   }
 }
+

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip,
@@ -9,7 +9,46 @@ import { useAuth } from '../../context/AuthContext';
 import { formatVND } from '../../utils/format';
 import { generateChartData, type ChartPoint } from '../../utils/chartDataUtils';
 
-// ChartPoint is imported from chartDataUtils
+// ─── Y-Axis formatter ──────────────────────────────────────────────────────────
+/**
+ * Rút gọn số VNĐ để hiển thị trên YAxis:
+ *  ≥ 1.000.000.000 → "1,0 tỷ"
+ *  ≥ 1.000.000     → "1,0 tr"   (triệu)
+ *  ≥ 1.000         → "1,0 k"
+ *  < 1.000         → giá trị nguyên
+ */
+function formatYAxis(value: number): string {
+  if (value === 0) return '0';
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1).replace('.', ',')} tỷ`;
+  if (value >= 1_000_000)     return `${(value / 1_000_000).toFixed(1).replace('.', ',')} tr`;
+  if (value >= 1_000)         return `${(value / 1_000).toFixed(0)}k`;
+  return String(value);
+}
+
+/**
+ * Tính domain YAxis với padding 20% phía trên so với max thực tế,
+ * đồng thời làm tròn max lên đến mức "đẹp" (multiple of a nice step)
+ * để grid lines trùng với các mốc tiền tệ có ý nghĩa.
+ */
+function computeYDomain(data: ChartPoint[]): [number, number] {
+  const maxVal = data.reduce((m, d) => Math.max(m, d.income, d.expense), 0);
+  if (maxVal === 0) return [0, 1_000_000]; // fallback khi không có data
+
+  // Bước đẹp: chọn bước gần nhất trong bộ cơ số
+  const rawMax = maxVal * 1.2; // +20% padding
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax))); // bậc 10
+  const steps = [1, 2, 2.5, 5, 10];
+  let niceStep = magnitude;
+  for (const s of steps) {
+    const candidate = s * magnitude;
+    if (rawMax / candidate <= 5) { // ≤ 5 ticks đẹp
+      niceStep = candidate;
+      break;
+    }
+  }
+  const niceMax = Math.ceil(rawMax / niceStep) * niceStep;
+  return [0, niceMax];
+}
 
 const FILTERS: { label: string; period: '7d' | '1m' }[] = [
   { label: '7 ngày', period: '7d' },
@@ -35,46 +74,32 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+import { useQuery } from '@tanstack/react-query';
+
 export default function FinancialChartBlock() {
   const { token } = useAuth();
   const [activeFilter, setActiveFilter] = useState<'7d' | '1m'>('7d');
-  // Initialize with zero-filled skeleton so the X-axis never lags behind
-  const [data, setData] = useState<ChartPoint[]>(() => generateChartData([], '7d'));
-  const [loading, setLoading] = useState(true);
 
-  const fetchChart = async () => {
-    setLoading(true);
-    try {
+  const { data, isLoading: loading } = useQuery({
+    queryKey: ['chart', activeFilter],
+    queryFn: async () => {
       const res = await fetch(`http://localhost:3000/transactions/chart?period=${activeFilter}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        const json: ChartPoint[] = await res.json();
-        // Client-side safety net: merge with zero-filled range ending at TODAY (VN time)
-        // Ensures chart always shows up-to-the-minute date even if backend lags
-        setData(generateChartData(json, activeFilter));
-      } else {
-        // On API error, still render a zero-filled range ending at today
-        setData(generateChartData([], activeFilter));
-      }
-    } catch (e) {
-      console.error('[FinancialChartBlock] fetch error:', e);
-      setData(generateChartData([], activeFilter));
-    } finally {
-      setLoading(false);
-    }
-  };
+      if (!res.ok) throw new Error('API error');
+      const json: ChartPoint[] = await res.json();
+      return generateChartData(json, activeFilter);
+    },
+    enabled: !!token,
+    placeholderData: (previousData) => previousData || generateChartData([], activeFilter),
+  });
 
-  useEffect(() => {
-    if (token) fetchChart();
+  const displayData = data || generateChartData([], activeFilter);
 
-    const handleUpdate = () => {
-      fetchChart();
-    };
-
-    window.addEventListener('finance_update', handleUpdate);
-    return () => window.removeEventListener('finance_update', handleUpdate);
-  }, [token, activeFilter]);
+  // Tính domain + tickCount từ dữ liệu thực tế
+  const yDomain = useMemo(() => computeYDomain(displayData), [displayData]);
+  // 5 tick đều nhau từ 0 → max
+  const yTickCount = 5;
 
   return (
     <motion.div
@@ -134,13 +159,16 @@ export default function FinancialChartBlock() {
           <div className="absolute inset-0 flex items-center justify-center">
             <Loader2 size={24} className="animate-spin text-sky-400" />
           </div>
-        ) : data.length === 0 ? (
+        ) : displayData.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2" style={{ color: 'var(--text-muted)' }}>
             <p className="text-sm">Chưa có dữ liệu giao dịch trong khoảng thời gian này.</p>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+            <AreaChart
+              data={displayData}
+              margin={{ top: 8, right: 8, bottom: 0, left: 12 }}
+            >
               <defs>
                 <linearGradient id="incomeG" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#34d399" stopOpacity={0.35} />
@@ -151,18 +179,36 @@ export default function FinancialChartBlock() {
                   <stop offset="100%" stopColor="#f87171" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+
+              {/* Grid nằm ngang, căn theo các mốc tiền tệ của YAxis */}
+              <CartesianGrid
+                strokeDasharray="4 4"
+                stroke="var(--border)"
+                vertical={false}
+                strokeOpacity={0.6}
+              />
+
               <XAxis
                 dataKey="label"
                 tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
-                axisLine={false} tickLine={false}
+                axisLine={false}
+                tickLine={false}
+                dy={4}
               />
+
+              {/* YAxis với formatter VNĐ rút gọn + domain có padding */}
               <YAxis
                 tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
-                axisLine={false} tickLine={false}
-                unit="tr"
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={formatYAxis}
+                domain={yDomain}
+                tickCount={yTickCount}
+                width={56}
               />
+
               <Tooltip content={<CustomTooltip />} />
+
               <Area
                 type="monotone" dataKey="income" name="income"
                 stroke="#34d399" strokeWidth={2.5}

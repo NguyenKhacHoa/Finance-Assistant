@@ -47,4 +47,9 @@ export class AlertsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   sendBlockAlert(userId: string, data: any) {
     this.server.to(`user_${userId}`).emit('transaction-blocked', data);
   }
+
+  // Gửi thông báo giao dịch ngân hàng
+  sendBankTransactionAlert(userId: string, data: any) {
+    this.server.to(`user_${userId}`).emit('new_bank_transaction', data);
+  }
 }

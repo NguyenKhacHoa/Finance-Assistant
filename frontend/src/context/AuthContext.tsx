@@ -1,8 +1,48 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { notificationBus } from '../utils/notificationBus';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const TOKEN_KEY = 'fa_v4_token';
 const REMEMBER_KEY = 'fa_v4_email';
+
+// ─── Storage keys cần xóa khi logout ────────────────────────────────────────
+// Tập trung tất cả storage keys ở đây để không bỏ sót khi thêm key mới.
+const CLEAR_ON_LOGOUT_KEYS = [
+  TOKEN_KEY,
+  'fa_notifications',  // notificationBus localStorage key
+];
+
+/**
+ * Xóa sạch toàn bộ trạng thái phía client:
+ *  - Các localStorage keys của app (giữ REMEMBER_KEY nếu người dùng tick "ghi nhớ")
+ *  - sessionStorage (không có data nhạy cảm nhưng xóa để sạch)
+ *  - External queryClient cache — phải được truyền vào từ ngoài
+ *
+ * Hàm này được gọi trong logout() VÀ sau khi deleteAccount thành công.
+ * Export để DangerZone.tsx có thể gọi trực tiếp.
+ */
+export function clearAllClientState(opts?: {
+  keepRememberEmail?: boolean;
+  queryClientRef?: { clear: () => void };
+}) {
+  // 1. Xóa các localStorage key thuộc app
+  const rememberEmail = localStorage.getItem(REMEMBER_KEY);
+  CLEAR_ON_LOGOUT_KEYS.forEach((key) => localStorage.removeItem(key));
+
+  // 2. Khôi phục email "ghi nhớ" nếu cần
+  if (opts?.keepRememberEmail && rememberEmail) {
+    localStorage.setItem(REMEMBER_KEY, rememberEmail);
+  }
+
+  // 3. Xóa sessionStorage (token ngắn hạn, draft state, v.v.)
+  sessionStorage.clear();
+
+  // 4. Reset notificationBus (xóa cache thông báo của account cũ)
+  notificationBus.clear();
+
+  // 5. Reset React Query cache — tránh data cũ nhảy sang account mới
+  opts?.queryClientRef?.clear();
+}
 
 export interface AuthUser {
   id: string;
@@ -21,13 +61,13 @@ interface AuthCtx {
   token: string | null;
   loading: boolean;
   isServerAlive: boolean;
-  login:    (email: string, password: string, remember?: boolean) => Promise<void>;
-  register: (data: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
-  logout:   () => void;
-  refreshMe: () => Promise<void>;
+  login:          (email: string, password: string, remember?: boolean) => Promise<void>;
+  register:       (data: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
+  logout:         (opts?: { queryClientRef?: { clear: () => void } }) => void;
+  refreshMe:      () => Promise<void>;
   loginWithToken: (t: string) => Promise<void>;
-  sendOtp:  (phone: string) => Promise<{ message: string }>;
-  verifyOtp: (phone: string, otp: string) => Promise<void>;
+  sendOtp:        (phone: string) => Promise<{ message: string }>;
+  verifyOtp:      (phone: string, otp: string) => Promise<void>;
 }
 
 const Ctx = createContext<AuthCtx | null>(null);
@@ -115,11 +155,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.user);
   };
 
-  const logout = () => {
-    localStorage.removeItem(TOKEN_KEY);
+  const logout = useCallback((opts?: { queryClientRef?: { clear: () => void } }) => {
+    clearAllClientState({
+      keepRememberEmail: true,
+      queryClientRef: opts?.queryClientRef,
+    });
     setToken(null);
     setUser(null);
-  };
+  }, []);
 
   const refreshMe = async () => {
     if (!token) return;

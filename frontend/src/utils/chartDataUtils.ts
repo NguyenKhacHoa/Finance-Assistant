@@ -2,118 +2,198 @@
  * chartDataUtils.ts
  * -----------------
  * Utility for generating timezone-aware chart data for the "Xu hướng Thu Chi" chart.
- * Timezone: Asia/Ho_Chi_Minh (UTC+7)
  *
- * Week convention: Monday-first (ISO 8601).
- * Missing days are auto-filled with { income: 0, expense: 0 }.
+ * ✅ Requirements:
+ *  - Luôn hiển thị đủ 7 hoặc 30 ngày gần nhất tính đến HÔM NAY (Asia/Ho_Chi_Minh)
+ *  - Ngày nào không có giao dịch → income = 0, expense = 0  (zero-fill)
+ *  - Tuần bắt đầu từ Thứ Hai (ISO 8601 / Monday-first)
+ *  - Dùng date-fns + locale vi để format nhãn tiếng Việt chính xác
+ *
+ * Timezone strategy:
+ *  - Không dùng `new Date()` raw vì Node/Browser default về UTC hoặc system tz
+ *  - Dùng `toZonedTime` (date-fns-tz) hoặc offset cố định +7h để tính "hôm nay VN"
+ *  - date-fns locale vi cung cấp: Th 2, Th 3, ..., CN (Monday-first theo ISO)
  */
 
-const TZ = 'Asia/Ho_Chi_Minh';
-const VN_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7 fixed offset
+import {
+  eachDayOfInterval,
+  format,
+  parseISO,
+  startOfDay,
+  addHours,
+  startOfWeek,
+  endOfWeek,
+  startOfMonth,
+} from 'date-fns';
+import { vi } from 'date-fns/locale';
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+/** VN timezone offset: UTC+7 (fixed, không đổi DST) */
+const VN_OFFSET_HOURS = 7;
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface ChartPoint {
-  date: string;   // "YYYY-MM-DD" in VN local date
-  label: string;  // display label for XAxis
+  /** "YYYY-MM-DD" theo giờ Việt Nam */
+  date: string;
+  /** Nhãn hiển thị trên XAxis (ví dụ: "Th 2", "19/04") */
+  label: string;
   income: number;
   expense: number;
 }
 
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
 /**
- * Returns "YYYY-MM-DD" for the current moment in Asia/Ho_Chi_Minh timezone.
+ * Trả về Date object đại diện cho "hôm nay" theo giờ Asia/Ho_Chi_Minh.
+ *
+ * Cách tính: lấy UTC hiện tại + 7h → đây là "giờ Hà Nội" trong biểu diễn UTC.
+ * `startOfDay` cắt về 00:00:00 của ngày đó.
+ *
+ * Note: Date object này vẫn mang nhãn UTC nhưng giá trị số của ngày/tháng/năm
+ * tương ứng với VN local date — đủ để tạo key "YYYY-MM-DD" chính xác.
  */
-export function getTodayVn(): string {
-  const vnMs = Date.now() + VN_OFFSET_MS;
-  return new Date(vnMs).toISOString().slice(0, 10);
+function getTodayInVN(): Date {
+  const utcNow = new Date();
+  // Dịch sang "VN wall-clock" bằng cách cộng offset vào UTC
+  const vnNow = addHours(utcNow, VN_OFFSET_HOURS);
+  // Cắt về midnight của ngày đó
+  return startOfDay(vnNow);
 }
 
 /**
- * Returns the VN-local date key for a given UTC Date object.
+ * Chuyển một UTC Date từ backend → date key "YYYY-MM-DD" theo giờ VN.
+ * Dùng khi merge dữ liệu transactions (stored as UTC) về VN local date.
  */
 export function toVnDateKey(utcDate: Date): string {
-  const vnMs = utcDate.getTime() + VN_OFFSET_MS;
-  return new Date(vnMs).toISOString().slice(0, 10);
+  const vnDate = addHours(utcDate, VN_OFFSET_HOURS);
+  return format(vnDate, 'yyyy-MM-dd');
 }
 
 /**
- * Generates an XAxis label for a date string ("YYYY-MM-DD").
- *  - 7-day mode  → weekday short name  (e.g. "Th 2", "CN")
- *  - 30-day mode → DD/MM              (e.g. "19/04")
+ * Trả về date key "YYYY-MM-DD" của hôm nay theo giờ VN.
+ */
+export function getTodayVn(): string {
+  return format(getTodayInVN(), 'yyyy-MM-dd');
+}
+
+/**
+ * buildLabel — sinh nhãn XAxis theo locale vi
  *
- * Week starts on Monday (ISO 8601) as required.
+ * Mode 7 ngày  → Weekday viết tắt: "Th 2" | "Th 3" | ... | "CN"
+ *                date-fns format 'EEEEEE' + locale vi → "Th 2", "CN", v.v.
+ *                Tuần bắt đầu Thứ Hai vì locale vi mặc định ISO week (Mon=1)
+ *
+ * Mode 30 ngày → "19/04" (dd/MM)
+ *
+ * @param dateKey  "YYYY-MM-DD"
+ * @param isWeekMode  true = 7d, false = 1m
  */
 function buildLabel(dateKey: string, isWeekMode: boolean): string {
-  // Parse as VN midnight to avoid UTC shift on the label
-  const d = new Date(dateKey + 'T00:00:00+07:00');
+  // parseISO('2026-04-19') → Date object giữ nguyên ngày (không shift timezone)
+  // vì đây chỉ là ngày, không có giờ, không bị UTC offset ảnh hưởng
+  const d = parseISO(dateKey);
+
   if (isWeekMode) {
-    return d.toLocaleDateString('vi-VN', { weekday: 'short', timeZone: TZ });
+    // 'EEEEEE' = shortest weekday abbreviation (Mon=first với locale vi)
+    // Kết quả: "Th 2", "Th 3", "Th 4", "Th 5", "Th 6", "Th 7", "CN"
+    return format(d, 'EEEEEE', { locale: vi });
   }
-  return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', timeZone: TZ });
+
+  // '1m' mode: "19/04"
+  return format(d, 'dd/MM', { locale: vi });
 }
 
 /**
- * Core utility: buildZeroFilledRange
- * -----------------------------------
- * Creates an ordered array of { date, income: 0, expense: 0 } entries
- * for the last `days` days, always ending with TODAY (VN time).
+ * buildZeroFilledRange
+ * ---------------------
+ * Tạo Map<dateKey, {income:0, expense:0}> theo logic:
  *
- * Example for days=7 and today=2026-04-19:
- *   ["2026-04-13", "2026-04-14", ..., "2026-04-19"]
+ * Ví dụ 7d: Từ Thứ 2 -> Chủ Nhật của TUẦN HIỆN TẠI (tuần có thể có ngày tương lai).
+ * Ví dụ 1m: Từ ngày 1 -> HÔM NAY của THÁNG HIỆN TẠI (tuyệt đối không hiển thị tương lai gộp).
+ *
+ * Tất cả entries đều được khởi tạo với income=0, expense=0.
+ * Ngày thiếu giao dịch → giữ nguyên 0, không bị bỏ sót.
  */
-function buildZeroFilledRange(days: number): Map<string, { income: number; expense: number }> {
-  const nowVnMs = Date.now() + VN_OFFSET_MS;
-  // Floor to today's midnight in VN
-  const todayVnMidnightMs = nowVnMs - (nowVnMs % 86_400_000);
-  // Start = today - (days - 1) so the last entry is today
-  const startVnMidnightMs = todayVnMidnightMs - (days - 1) * 86_400_000;
+function buildZeroFilledRange(
+  period: '7d' | '1m',
+): Map<string, { income: number; expense: number }> {
+  const todayVN = getTodayInVN(); // midnight của hôm nay (VN)
+  let startVN: Date;
+  let endVN: Date;
+
+  if (period === '7d') {
+      // Tuần bắt đầu từ Thứ Hai (weekStartsOn: 1) tới Chủ Nhật
+      startVN = startOfWeek(todayVN, { weekStartsOn: 1 });
+      endVN = endOfWeek(todayVN, { weekStartsOn: 1 });
+  } else {
+      // Với tháng: Từ mùng 1 đầu tháng tới Hôm Nay (Tuyệt đối không lấy ngày chưa tới)
+      startVN = startOfMonth(todayVN);
+      endVN = todayVN;
+  }
+
+  // eachDayOfInterval tạo mảng mỗi ngày từ start → end, INCLUSIVE cả 2 đầu
+  const days_in_range = eachDayOfInterval({ start: startVN, end: endVN });
 
   const map = new Map<string, { income: number; expense: number }>();
-  for (let i = 0; i < days; i++) {
-    const vnDayMs = startVnMidnightMs + i * 86_400_000;
-    const key = new Date(vnDayMs).toISOString().slice(0, 10);
+  for (const day of days_in_range) {
+    const key = format(day, 'yyyy-MM-dd'); // "YYYY-MM-DD"
     map.set(key, { income: 0, expense: 0 });
   }
+
   return map;
 }
 
+// ─── Public API ───────────────────────────────────────────────────────────────
+
 /**
  * generateChartData
- * ------------------
- * Merges API response data (from backend) with a guaranteed zero-filled range.
+ * -----------------
+ * Hàm chính — merge dữ liệu từ API backend với range zero-filled.
  *
- * This is the CLIENT-SIDE safety net:
- *  1. Builds the full date range always ending at today (VN timezone).
- *  2. Merges backend data into the range.
- *  3. Any day missing from the backend gets income=0, expense=0.
- *  4. Returns a sorted, label-ready ChartPoint[].
+ * Pipeline:
+ *  1. Tạo Map đầy đủ các ngày tuỳ theo period (tất cả = 0)  → buildZeroFilledRange()
+ *  2. Duyệt apiData, ghi đè 0 bằng giá trị thực   → chỉ set ngày nằm trong range
+ *  3. Sort chronological → map về ChartPoint[]     → buildLabel()
  *
- * @param apiData - Array returned by GET /transactions/chart?period=...
- * @param period  - '7d' | '1m'
+ * Guarantees:
+ *  ✅ 7d:  Luôn hiển thị T2 -> CN
+ *  ✅ 1m:  Từ ngày mùng 1 tới HÔM NAY (không hiển thị tương lai)
+ *  ✅ Ngày không có giao dịch → income=0, expense=0
+ *  ✅ Tuần bắt đầu Thứ Hai (date-fns locale vi)
+ *  ✅ Labels tiếng Việt: "Th 2"..."CN" / "19/04"
+ *
+ * @param apiData  Mảng ChartPoint trả về từ GET /transactions/chart
+ * @param period   '7d' | '1m'
  */
 export function generateChartData(
   apiData: ChartPoint[],
   period: '7d' | '1m',
 ): ChartPoint[] {
-  const days = period === '1m' ? 30 : 7;
-  const isWeekMode = days <= 7;
+  const isWeekMode = period === '7d';
 
-  // Step 1: Build zero-filled range (always current)
-  const dayMap = buildZeroFilledRange(days);
+  // Bước 1: Skeleton đầy đủ — tất cả ngày = 0
+  const dayMap = buildZeroFilledRange(period);
 
-  // Step 2: Merge API data — overwrite zeros with real values
+  // Bước 2: Ghi đè bằng dữ liệu thực từ backend
   for (const point of apiData) {
+    // Nếu BE trả về point của ngày thuộc hàm, nó sẽ ghi đè lên số 0
     if (dayMap.has(point.date)) {
-      dayMap.set(point.date, { income: point.income, expense: point.expense });
+      dayMap.set(point.date, {
+        income:  point.income,
+        expense: point.expense,
+      });
     }
-    // Dates outside our range (e.g., stale backend data) are ignored
   }
 
-  // Step 3: Produce sorted ChartPoint[] with labels
+  // Bước 3: Convert về ChartPoint[] theo thứ tự thời gian
   return Array.from(dayMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b)) // chronological order
+    .sort(([a], [b]) => a.localeCompare(b))   // "YYYY-MM-DD" sort = chronological
     .map(([date, vals]) => ({
       date,
-      label: buildLabel(date, isWeekMode),
-      income: vals.income,
+      label:   buildLabel(date, isWeekMode),
+      income:  vals.income,
       expense: vals.expense,
     }));
 }

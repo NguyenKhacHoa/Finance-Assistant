@@ -6,6 +6,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { useNavigate } from 'react-router-dom';
 import type { ThemeId } from '../../theme-config';
 import NotificationBell from './NotificationBell';
+import { useQueryClient } from '@tanstack/react-query';
 
 
 const THEME_ICONS: Record<string, React.ReactNode> = {
@@ -18,6 +19,7 @@ export default function FintechHeader() {
   const { user, logout } = useAuth();
   const { themeId, setTheme, themes } = useTheme();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [profileOpen, setProfileOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -153,7 +155,7 @@ export default function FintechHeader() {
                   ))}
                   <div className="border-t my-1" style={{ borderColor: 'var(--border)' }} />
                   <button
-                    onClick={() => { logout(); navigate('/login'); setProfileOpen(false); }}
+                    onClick={() => { logout({ queryClientRef: queryClient }); navigate('/login'); setProfileOpen(false); }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-red-400"
                     onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(248,113,113,0.08)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}

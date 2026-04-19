@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Target, Trophy, Star, Zap, Award, Plus, ChevronRight,
-  Clock, PiggyBank, Camera, History, Medal,
+  Trophy, Star, Zap, Award,
+  Clock, PiggyBank, Camera, History, Medal, Target
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { formatVND } from '../../utils/format';
 
 // ── icon mapping dùng chung ────────────────────────────────────────
 function badgeIcon(icon: string, cls = 'w-6 h-6') {
@@ -28,26 +27,18 @@ function timeAgo(ts: string): string {
   return `${Math.floor(diff / 86400)} ngày trước`;
 }
 
-type TabId = 'badges' | 'history' | 'goals';
+type TabId = 'badges' | 'history';
 
-export default function Rewards() {
+export default function RewardsPage() {
   const { user } = useAuth();
   const [points, setPoints] = useState(0);
   const [activeTab, setActiveTab] = useState<TabId>('badges');
-
-  // Goals state
-  const [goalTitle, setGoalTitle] = useState('');
-  const [goalAmount, setGoalAmount] = useState('');
-  const [goalDays, setGoalDays] = useState('7');
-  const [activeGoals, setActiveGoals] = useState<any[]>([]);
 
   // Badge state
   const [badges, setBadges] = useState<any[]>([]);
 
   // Point history state
   const [pointHistory, setPointHistory] = useState<any[]>([]);
-
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     if (user) setPoints(user.rewardPoints || 0);
@@ -60,13 +51,11 @@ export default function Rewards() {
 
   const fetchData = async () => {
     try {
-      const [goalsRes, badgesRes, historyRes] = await Promise.all([
-        fetch('http://localhost:3000/gamification/goals', { headers: getHeaders() }),
+      const [badgesRes, historyRes] = await Promise.all([
         fetch('http://localhost:3000/gamification/badges', { headers: getHeaders() }),
         fetch('http://localhost:3000/gamification/points/history', { headers: getHeaders() }),
       ]);
 
-      if (goalsRes.ok) setActiveGoals(await goalsRes.json());
       if (badgesRes.ok) setBadges(await badgesRes.json());
       if (historyRes.ok) setPointHistory(await historyRes.json());
 
@@ -78,38 +67,10 @@ export default function Rewards() {
       }
     } catch (e) {
       console.error(e);
-    } finally {
-      setIsLoading(false);
     }
   };
 
   useEffect(() => { fetchData(); }, []);
-
-  const handleCreateGoal = async () => {
-    if (!goalTitle || !goalAmount || !goalDays) return;
-    try {
-      const targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() + parseInt(goalDays));
-      await fetch('http://localhost:3000/gamification/goals', {
-        method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({ title: goalTitle, targetAmount: Number(goalAmount.replace(/\D/g, '')), deadline: targetDate.toISOString() })
-      });
-      setGoalTitle(''); setGoalAmount(''); setGoalDays('7');
-      fetchData();
-    } catch (e) { console.error(e); }
-  };
-
-  const handleFundGoal = async (id: string) => {
-    try {
-      await fetch('http://localhost:3000/gamification/goals/fund', {
-        method: 'POST', headers: getHeaders(),
-        body: JSON.stringify({ goalId: id, amount: 100000 })
-      });
-      await fetch('http://localhost:3000/gamification/evaluate', { method: 'POST', headers: getHeaders() });
-      await fetchData();
-    } catch (e) { console.error(e); }
-  };
 
   const unlockedCount = badges.filter(b => b.unlocked).length;
   let tierName = 'Hạng Đồng';
@@ -122,7 +83,6 @@ export default function Rewards() {
   const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
     { id: 'badges',  label: 'Huy Hiệu',      icon: <Medal size={15} /> },
     { id: 'history', label: 'Lịch Sử Điểm',  icon: <History size={15} /> },
-    { id: 'goals',   label: 'Mục Tiêu',       icon: <Target size={15} /> },
   ];
 
   return (
@@ -291,117 +251,6 @@ export default function Rewards() {
                     </span>
                   </motion.div>
                 ))
-              )}
-            </div>
-          </motion.div>
-        )}
-
-        {/* ── TAB: Mục Tiêu ── */}
-        {activeTab === 'goals' && (
-          <motion.div
-            key="goals"
-            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-            className="rounded-[2rem] border overflow-hidden"
-            style={{ background: 'var(--bg-surface)', borderColor: 'var(--border)' }}
-          >
-            {/* Form tạo Goal */}
-            <div className="p-6 border-b space-y-4" style={{ borderColor: 'var(--border)' }}>
-              <h2 className="font-bold text-lg flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-                <Target size={18} style={{ color: 'var(--primary)' }} /> Lập Mục Tiêu Mới
-              </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <input
-                  value={goalTitle}
-                  onChange={e => setGoalTitle(e.target.value)}
-                  placeholder="Tên mục tiêu..."
-                  className="px-4 py-3 rounded-xl text-sm font-medium outline-none border focus:ring-2"
-                  style={{ background: 'var(--bg-base)', color: 'var(--text-primary)', borderColor: 'var(--border)' }}
-                />
-                <input
-                  value={goalAmount}
-                  onChange={e => setGoalAmount(e.target.value)}
-                  placeholder="Số tiền (VNĐ)"
-                  className="px-4 py-3 rounded-xl text-sm font-medium outline-none border"
-                  style={{ background: 'var(--bg-base)', color: 'var(--text-primary)', borderColor: 'var(--border)' }}
-                />
-                <div className="flex gap-2">
-                  <input
-                    type="number" value={goalDays}
-                    onChange={e => setGoalDays(e.target.value)}
-                    placeholder="Số ngày"
-                    className="flex-1 px-4 py-3 rounded-xl text-sm font-medium outline-none border"
-                    style={{ background: 'var(--bg-base)', color: 'var(--text-primary)', borderColor: 'var(--border)' }}
-                  />
-                  <button
-                    onClick={handleCreateGoal}
-                    className="px-5 py-3 rounded-xl text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95"
-                    style={{ background: 'var(--primary)', color: '#000' }}
-                  >
-                    <Plus size={16} /> Tạo
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Goal List */}
-            <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
-              <AnimatePresence mode="popLayout">
-                {activeGoals.map((g) => {
-                  const current = Number(g.currentAmount ?? 0);
-                  const target = Number(g.targetAmount ?? 1);
-                  const pct = Math.min(100, Math.round((current / target) * 100));
-                  const isDone = g.status === 'COMPLETED';
-                  const daysLeft = g.deadline ? Math.max(0, Math.ceil((new Date(g.deadline).getTime() - Date.now()) / 86400000)) : null;
-
-                  return (
-                    <motion.div
-                      layout key={g.id}
-                      initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}
-                      className="p-6 flex flex-col gap-3"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <h4 className="font-bold text-base" style={{ color: 'var(--text-primary)' }}>{g.title}</h4>
-                          <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                            {isDone ? '🌟 Đã hoàn thành' : daysLeft !== null ? `📅 Còn ${daysLeft} ngày` : ''}
-                          </p>
-                        </div>
-                        <span className={`text-xl font-black ${isDone ? 'text-emerald-400' : ''}`} style={!isDone ? { color: 'var(--primary)' } : {}}>
-                          {pct}%
-                        </span>
-                      </div>
-
-                      <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
-                        <motion.div
-                          initial={{ width: 0 }} animate={{ width: `${pct}%` }}
-                          className={`h-full rounded-full ${isDone ? 'bg-emerald-400' : 'bg-[var(--primary)]'}`}
-                        />
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold" style={{ color: 'var(--text-muted)' }}>
-                          <span style={{ color: 'var(--text-primary)' }}>{formatVND(current)}</span>
-                          {' / '}{formatVND(target)}
-                        </span>
-                        {!isDone && (
-                          <button
-                            onClick={() => handleFundGoal(g.id)}
-                            className="px-4 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all hover:scale-105"
-                            style={{ background: 'var(--primary-glow)', color: 'var(--primary)', border: '1px solid var(--primary)' }}
-                          >
-                            + Nạp 100K <ChevronRight size={12} />
-                          </button>
-                        )}
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </AnimatePresence>
-              {activeGoals.length === 0 && !isLoading && (
-                <div className="py-16 text-center">
-                  <Target size={40} className="mx-auto mb-3 opacity-20" style={{ color: 'var(--text-muted)' }} />
-                  <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Chưa có mục tiêu nào. Hãy tạo mục tiêu đầu tiên!</p>
-                </div>
               )}
             </div>
           </motion.div>

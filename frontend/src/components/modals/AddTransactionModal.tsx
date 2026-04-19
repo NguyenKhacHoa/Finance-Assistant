@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Camera, Save, AlertCircle, CheckCircle, Wallet, List, Tag } from 'lucide-react';
 import { useAuth, authFetch } from '../../context/AuthContext';
+import { useQueryClient } from '@tanstack/react-query';
+import { NumericFormat } from 'react-number-format';
 import OCRProcessingOverlay from '../ai/OCRProcessingOverlay';
-import { formatVND, formatInputVND, parseVNDToNumber } from '../../utils/format';
+import { formatVND } from '../../utils/format';
 import { notificationBus } from '../../utils/notificationBus';
 
 interface AddTransactionModalProps {
@@ -31,11 +33,14 @@ export default function AddTransactionModal({ isOpen, onClose, onSuccess }: AddT
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const queryClient = useQueryClient();
+
   // Form state
   const [title, setTitle] = useState('');
-  const [amountDisplay, setAmountDisplay] = useState('');
+  const [amountInput, setAmountInput] = useState<number>(0);
   const [category, setCategory] = useState('Other');
   const [type, setType] = useState<'EXPENSE' | 'INCOME' | 'LUONG'>('EXPENSE');
+  const [source, setSource] = useState<'CASH' | 'BANK'>('CASH');
   const [metadata, setMetadata] = useState<any>(null);
   const [pockets, setPockets] = useState<any[]>([]);
   const [pocketId, setPocketId] = useState('');
@@ -89,7 +94,7 @@ export default function AddTransactionModal({ isOpen, onClose, onSuccess }: AddT
 
       // Auto-fill Logic
       setTitle(data.vendor || 'Hóa đơn mới');
-      setAmountDisplay(formatInputVND(String(data.totalAmount || '')));
+      setAmountInput(Number(data.totalAmount) || 0);
       setMetadata({ 
         vendor: data.vendor,
         tax: data.tax,
@@ -119,7 +124,7 @@ export default function AddTransactionModal({ isOpen, onClose, onSuccess }: AddT
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const amountNum = parseVNDToNumber(amountDisplay);
+    const amountNum = amountInput;
     if (!title || !amountNum || !pocketId) {
       setError('Vui lòng điền đầy đủ thông tin và số tiền hợp lệ.');
       return;
@@ -140,6 +145,7 @@ export default function AddTransactionModal({ isOpen, onClose, onSuccess }: AddT
           amount: amountNum,
           category,
           type,
+          source,
           pocketId,
           metadata
         }),
@@ -158,12 +164,14 @@ export default function AddTransactionModal({ isOpen, onClose, onSuccess }: AddT
       });
 
       // Emitting global event to force Dashboard/Charts to reload
-      window.dispatchEvent(new CustomEvent('finance_update'));
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['pockets'] });
+      queryClient.invalidateQueries({ queryKey: ['chart'] });
 
       onSuccess();
       onClose();
       // Reset form
-      setTitle(''); setAmountDisplay(''); setType('EXPENSE'); setMetadata(null);
+      setTitle(''); setAmountInput(0); setType('EXPENSE'); setMetadata(null);
     } catch (err: any) {
       setError(err?.message ?? 'Lỗi không xác định. Vui lòng kiểm tra kết nối.');
     } finally {
@@ -283,6 +291,31 @@ export default function AddTransactionModal({ isOpen, onClose, onSuccess }: AddT
               </button>
             </div>
 
+            <div className="grid grid-cols-2 gap-4">
+              <button
+                type="button"
+                onClick={() => setSource('CASH')}
+                className={`py-3 rounded-xl font-bold text-sm transition-all ${
+                  source === 'CASH' 
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' 
+                    : 'bg-white/5 text-white/40 border border-transparent hover:bg-white/10'
+                }`}
+              >
+                💵 Tiền mặt
+              </button>
+              <button
+                type="button"
+                onClick={() => setSource('BANK')}
+                className={`py-3 rounded-xl font-bold text-sm transition-all ${
+                  source === 'BANK' 
+                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
+                    : 'bg-white/5 text-white/40 border border-transparent hover:bg-white/10'
+                }`}
+              >
+                🏦 Ngân hàng
+              </button>
+            </div>
+
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-sky-200/40 uppercase tracking-wider ml-1">Tiêu đề giao dịch</label>
@@ -302,15 +335,14 @@ export default function AddTransactionModal({ isOpen, onClose, onSuccess }: AddT
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-sky-200/40 uppercase tracking-wider ml-1">Số tiền (VNĐ)</label>
-                  <input
-                    type="text"
-                    required
-                    value={amountDisplay}
-                    onChange={(e) => {
-                      const raw = e.target.value.replace(/[^0-9]/g, '');
-                      setAmountDisplay(formatInputVND(raw));
-                    }}
-                    placeholder="0"
+                  <NumericFormat
+                    value={amountInput || ''}
+                    onValueChange={(values) => setAmountInput(values.floatValue || 0)}
+                    thousandSeparator="."
+                    decimalSeparator=","
+                    suffix=" VND"
+                    allowNegative={false}
+                    placeholder="0 VND"
                     className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3.5 text-white placeholder:text-white/10 focus:border-sky-500/50 focus:bg-white/10 outline-none transition-all font-mono"
                   />
                 </div>

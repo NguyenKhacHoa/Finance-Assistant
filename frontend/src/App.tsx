@@ -4,6 +4,8 @@ import { ThemeProvider } from '@/context/ThemeContext';
 import CustomLogin from '@/components/pages/LoginPage';
 import DashboardPage from '@/components/pages/DashboardPage';
 import Rewards from '@/components/pages/RewardsPage';
+import GoalsPage from '@/components/pages/GoalsPage';
+import IncomePage from '@/components/pages/IncomePage';
 import AdminDashboard from '@/components/pages/AdminDashboardPage';
 import SocketAlerts from '@/components/widgets/SocketAlerts';
 import AppLayout from '@/components/layout/AppLayout';
@@ -60,6 +62,8 @@ function AppRoutes() {
         <Route path="/dashboard" element={user ? <AppLayout><DashboardPage /></AppLayout> : <Navigate to="/login" replace />} />
         <Route path="/transactions" element={user ? <AppLayout><TransactionPage /></AppLayout> : <Navigate to="/login" replace />} />
         <Route path="/pockets"   element={user ? <AppLayout><SixJarsPage /></AppLayout> : <Navigate to="/login" replace />} />
+        <Route path="/deposit"   element={user ? <AppLayout><IncomePage /></AppLayout> : <Navigate to="/login" replace />} />
+        <Route path="/goals"     element={user ? <AppLayout><GoalsPage /></AppLayout> : <Navigate to="/login" replace />} />
         <Route path="/rewards"   element={user ? <AppLayout><Rewards /></AppLayout> : <Navigate to="/login" replace />} />
         <Route path="/ai"        element={user ? <AppLayout><AIAssistant /></AppLayout> : <Navigate to="/login" replace />} />
         <Route path="/profile"   element={user ? <AppLayout><ProfilePage /></AppLayout> : <Navigate to="/login" replace />} />
@@ -72,12 +76,18 @@ function AppRoutes() {
   );
 }
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+const queryClient = new QueryClient();
+
 export default function App() {
   return (
-    <ThemeProvider>
-      <Router>
-        <AppRoutes />
-      </Router>
-    </ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <Router>
+          <AppRoutes />
+        </Router>
+      </ThemeProvider>
+    </QueryClientProvider>
   );
 }

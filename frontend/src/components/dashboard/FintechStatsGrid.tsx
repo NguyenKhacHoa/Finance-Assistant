@@ -1,18 +1,8 @@
-import { useEffect, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowUpRight, ArrowDownRight, Wallet, TrendingDown, Landmark, Briefcase, Loader2, Sparkles } from 'lucide-react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import { useAuth } from '../../context/AuthContext';
 import { formatVND } from '../../utils/format';
-
-interface Stats {
-  income: number;
-  expense: number;
-  balance: number;
-  totalBalance: number;
-  unallocatedBalance: number;
-}
-
 const CARD_CONFIG = [
   {
     key: 'income' as const,
@@ -69,37 +59,22 @@ function generateSparkData(value: number, points = 7): { v: number }[] {
   }));
 }
 
+import { useQuery } from '@tanstack/react-query';
+
 export default function FintechStatsGrid() {
   const { token } = useAuth();
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const fetchStats = useCallback(async () => {
-    try {
+  
+  const { data: stats, isLoading: loading } = useQuery({
+    queryKey: ['stats'],
+    queryFn: async () => {
       const res = await fetch('http://localhost:3000/transactions/stats', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        const data = await res.json();
-        setStats(data);
-      }
-    } catch (e) {
-      console.error('[FintechStatsGrid] fetch error:', e);
-    } finally {
-      if (loading) setLoading(false);
-    }
-  }, [token, loading]);
-
-  useEffect(() => {
-    if (token) fetchStats();
-
-    const handleUpdate = () => {
-      fetchStats();
-    };
-
-    window.addEventListener('finance_update', handleUpdate);
-    return () => window.removeEventListener('finance_update', handleUpdate);
-  }, [token, fetchStats]);
+      if (!res.ok) throw new Error('Network error');
+      return res.json();
+    },
+    enabled: !!token,
+  });
 
   if (loading && !stats) {
     return (
@@ -116,7 +91,7 @@ export default function FintechStatsGrid() {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
       {CARD_CONFIG.map((card, i) => {
-        const value = stats ? stats[card.key] : 0;
+        const value = stats ? stats[card.key as keyof typeof stats] : 0;
         const sparkData = generateSparkData(value);
         // We don't have previous month data yet, so just show direction from zero
         const isUp = value >= 0;
@@ -159,7 +134,11 @@ export default function FintechStatsGrid() {
                 {formatVND(value)}
               </p>
               <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                Dữ liệu thực từ database
+                {card.key === 'totalBalance'
+                  ? 'Tổng từ các hũ (không gồm surplus)'
+                  : card.key === 'unallocatedBalance'
+                  ? 'Tiền lương chưa đủ 100% vào hũ'
+                  : 'Dữ liệu thực từ database'}
               </p>
             </div>
 

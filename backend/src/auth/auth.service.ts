@@ -56,6 +56,7 @@ export class AuthService {
         verifyToken,
         verifyExpiry,
         isVerified: false,
+        webhookToken: crypto.randomUUID(),
       },
     });
 
@@ -228,6 +229,7 @@ export class AuthService {
           avatarUrl: profile.picture,
           googleId: profile.googleId,
           isVerified: true, // OAuth là đã xác thực luôn
+          webhookToken: crypto.randomUUID(),
         },
       });
     } else if (!user.googleId) {

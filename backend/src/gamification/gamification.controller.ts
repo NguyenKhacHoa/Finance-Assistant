@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Req, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Put, Delete, Body, Req, Param, UseGuards, Query } from '@nestjs/common';
 import { GamificationService } from './gamification.service';
 import { JwtGuard } from '../auth/jwt.guard';
 
@@ -23,6 +23,22 @@ export class GamificationController {
   async createGoal(@Body() body: any, @Req() req: any) {
     const userId = req.user?.sub;
     return this.gamificationService.createCustomGoal(userId, body);
+  }
+
+  @Put('goals/:id')
+  async updateGoal(@Param('id') goalId: string, @Body() body: any, @Req() req: any) {
+    const userId = req.user?.sub;
+    return this.gamificationService.updateGoal(userId, goalId, body);
+  }
+
+  @Delete('goals/:id')
+  async deleteGoal(
+    @Param('id') goalId: string, 
+    @Query('refundTarget') refundTarget: string,
+    @Req() req: any
+  ) {
+    const userId = req.user?.sub;
+    return this.gamificationService.deleteGoal(userId, goalId, refundTarget);
   }
 
   @Post('goals/fund')

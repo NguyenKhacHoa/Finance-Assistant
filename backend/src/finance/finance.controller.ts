@@ -21,4 +21,24 @@ export class FinanceController {
     const userId = req.user?.sub;
     return this.financeService.distributeSalary(userId, body.totalAmount, body.allocations);
   }
+
+  // ── Bước 1: Nạp tiền vào "Chưa phân bổ" ──────────────────────────────────
+  @Post('deposit')
+  async deposit(
+    @Body() body: { amount: number; note?: string },
+    @Req() req: any,
+  ) {
+    const userId = req.user?.sub;
+    return this.financeService.depositToUnallocated(userId, body.amount, body.note);
+  }
+
+  // ── Bước 2 (tuỳ chọn): Phân bổ từ "Chưa phân bổ" vào các hũ ────────────
+  @Post('distribute-from-unallocated')
+  async distributeFromUnallocated(
+    @Body() body: { allocations: { pocketId: string; amount: number }[] },
+    @Req() req: any,
+  ) {
+    const userId = req.user?.sub;
+    return this.financeService.distributeFromUnallocated(userId, body.allocations);
+  }
 }

@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { LayoutDashboard, CreditCard, PiggyBank, Trophy } from 'lucide-react';
 import FintechSidebar from '../dashboard/FintechSidebar';
 import FintechHeader from '../dashboard/FintechHeader';
+import FloatingAIWidget from '../FloatingAIWidget';
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -63,6 +64,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
           })}
         </nav>
       </div>
+
+      <FloatingAIWidget />
     </div>
   );
 }

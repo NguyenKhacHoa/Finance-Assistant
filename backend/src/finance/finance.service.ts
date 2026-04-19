@@ -104,68 +104,53 @@ export class FinanceService {
   private distributeIncomeToPockets(
     totalAmount: number,
     pockets: { id: string; name: string; percentage: number }[],
-  ): { pocketId: string; name: string; percentage: number; allocatedAmount: number }[] {
-    // ── Bước 0: Validate ──────────────────────────────────────────────────
-    if (!Number.isInteger(totalAmount) || totalAmount <= 0) {
-      throw new BadRequestException(
-        `Số tiền không hợp lệ: ${totalAmount}. Phải là số nguyên dương (VNĐ).`,
-      );
-    }
-    if (pockets.length === 0) {
-      throw new BadRequestException('Không có hũ nào được cấu hình để phân bổ.');
-    }
+  ) {
+    const safeTotal = Math.round(totalAmount);
+    // Tính tổng phần trăm mục tiêu
+    const targetTotalPercentage = pockets.reduce((acc, p) => acc + p.percentage, 0);
 
-    // ── Bước 1: Normalize % nếu tổng ≠ 100 ───────────────────────────────
-    const totalPercentage = pockets.reduce((sum, p) => sum + p.percentage, 0);
-    if (Math.abs(totalPercentage - 100) > 0.01) {
-      this.logger.warn(
-        `[distributeIncomeToPockets] Tổng % = ${totalPercentage} ≠ 100. Normalize để phân bổ toàn bộ ${totalAmount}.`,
-      );
-    }
-    // normFactor đảm bảo dù tổng % là bao nhiêu, ta vẫn phân bổ đúng 100% totalAmount
-    const normFactor = totalPercentage > 0 ? 100 / totalPercentage : 1;
-
-    // ── Bước 2: Tính exact share ─────────────────────────────────────────
+    // Tính exact amount cho mỗi hũ mà KHÔNG DÙNG normFactor
+    // Lượng tiền allocate cho các hũ = safeTotal * (targetTotalPercentage / 100)
+    // Nhưng ta sẽ gán cho mỗi hũ = safeTotal * (p.percentage / 100)
     const exactAmounts = pockets.map((p) => ({
       pocketId: p.id,
       name: p.name,
       percentage: p.percentage,
-      exactAmount: totalAmount * ((p.percentage * normFactor) / 100),
+      exactAmount: safeTotal * (p.percentage / 100),
     }));
 
-    // ── Bước 3: Floor → phần nguyên ──────────────────────────────────────
     const floored = exactAmounts.map((item) => ({
       ...item,
       allocatedAmount: Math.floor(item.exactAmount),
-      // Phần thập phân quyết định ai được nhận 1 đồng dư
       remainder: item.exactAmount - Math.floor(item.exactAmount),
     }));
 
-    // ── Bước 4: Largest Remainder Method ─────────────────────────────────
+    // Số tổng cần phân bổ bằng LRM cho phần mục tiêu
+    // Target Total Amount = SUM(exactAmount) -> làm tròn
+    const totalTargetAmount = Math.round(exactAmounts.reduce((s, a) => s + a.exactAmount, 0));
     const totalFloored = floored.reduce((sum, item) => sum + item.allocatedAmount, 0);
-    const remainingUnits = totalAmount - totalFloored; // số đồng dư cần phân phối
 
-    // Sắp xếp: remainder lớn nhất nhận thêm 1 đồng trước
+    const remainingUnits = totalTargetAmount - totalFloored;
+    
     const sorted = [...floored].sort((a, b) => b.remainder - a.remainder);
     for (let i = 0; i < remainingUnits; i++) {
-      sorted[i % sorted.length].allocatedAmount += 1;
+        if (sorted.length > 0) {
+            sorted[i % sorted.length].allocatedAmount += 1;
+        }
     }
 
-    // ── Bước 5: Assertion bảo vệ – không bao giờ được sai ────────────────
     const finalTotal = sorted.reduce((sum, item) => sum + item.allocatedAmount, 0);
-    if (finalTotal !== totalAmount) {
+    if (finalTotal !== totalTargetAmount) {
       throw new Error(
-        `[FATAL] Lỗi kế toán: Tổng phân bổ ${finalTotal} ≠ ${totalAmount}. ` +
-        `Báo cáo ngay cho kỹ thuật để kiểm tra.`,
+        `[FATAL] Lỗi kế toán: Tổng phân bổ hũ thật ${finalTotal} ≠ ${totalTargetAmount}.`,
       );
     }
 
     this.logger.log(
-      `[distributeIncomeToPockets] ${totalAmount.toLocaleString()} VNĐ → ` +
+      `[distributeIncomeToPockets] Target ${totalTargetAmount.toLocaleString()} VNĐ → ` +
       sorted.map((s) => `${s.name}: ${s.allocatedAmount.toLocaleString()} (${s.percentage}%)`).join(' | '),
     );
 
-    // Trả về theo thứ tự input gốc để output nhất quán
     const resultMap = new Map(sorted.map((s) => [s.pocketId, s]));
     return pockets.map((p) => resultMap.get(p.id)!);
   }
@@ -211,25 +196,21 @@ export class FinanceService {
     }
 
     // ── Xác định hũ tham gia phân bổ ─────────────────────────────────────
-    // Nếu client gửi allocations → chỉ phân bổ vào các pocketId đó
-    // Nếu không → phân bổ toàn bộ hũ của user
     let targetPockets: { id: string; name: string; percentage: number }[];
 
     if (allocations && allocations.length > 0) {
       const requestedIds = new Set(allocations.map((a) => a.pocketId));
       targetPockets = allPockets
-        .filter((p) => requestedIds.has(p.id))
+        .filter((p) => requestedIds.has(p.id) && p.name !== 'Tiền chưa vào hũ')
         .map((p) => ({ id: p.id, name: p.name, percentage: Number(p.percentage) }));
-
-      if (targetPockets.length === 0) {
-        throw new BadRequestException('Không tìm thấy hũ hợp lệ trong danh sách phân bổ.');
-      }
     } else {
-      targetPockets = allPockets.map((p) => ({
-        id: p.id,
-        name: p.name,
-        percentage: Number(p.percentage),
-      }));
+      targetPockets = allPockets
+        .filter(p => p.name !== 'Tiền chưa vào hũ')
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          percentage: Number(p.percentage),
+        }));
     }
 
     // ── Tính phân bổ chính xác (Largest Remainder Method) ─────────────────
@@ -271,15 +252,39 @@ export class FinanceService {
         });
       }
 
-      // ── B2: Surplus → unallocatedBalance (khi tổng % < 100%) ──────────
+      // ── B2: Surplus → Tiền chưa vào hũ ──────────────────────────
       const surplus = Math.max(0, safeTotal - totalAllocated);
       const targetTotal = targetPockets.reduce((s, p) => s + p.percentage, 0);
       if (surplus > 0) {
-        this.logger.log(`[distributeSalary] Surplus: ${surplus.toLocaleString()} VNĐ → unallocatedBalance`);
+        this.logger.log(`[distributeSalary] Surplus: ${surplus.toLocaleString()} VNĐ → Tiền chưa vào hũ`);
+        
+        let unallocatedPocket = await tx.pocket.findFirst({
+            where: { userId, name: 'Tiền chưa vào hũ' }
+        });
+
+        if (!unallocatedPocket) {
+            unallocatedPocket = await tx.pocket.create({
+                data: {
+                    userId,
+                    name: 'Tiền chưa vào hũ',
+                    percentage: 0,
+                    balance: surplus,
+                    isEssential: false,
+                }
+            });
+            updatedPockets.push(unallocatedPocket);
+        } else {
+            const updated = await tx.pocket.update({
+                where: { id: unallocatedPocket.id },
+                data: { balance: { increment: surplus } }
+            });
+            updatedPockets.push(updated);
+        }
+
         await tx.transaction.create({
           data: {
             userId,
-            pocketId: null,
+            pocketId: unallocatedPocket.id,
             amount: surplus,
             type: 'INCOME',
             title: `Lương chưa phân bổ (${(100 - targetTotal).toFixed(2)}% còn lại)`,
@@ -312,7 +317,9 @@ export class FinanceService {
       }
 
       // ── B4: Cập nhật unallocatedBalance ròng ──────────────────────────
-      const unallocatedChange = surplus - totalFixed;
+      // Surplus đã được chuyển vào hũ "Tiền chưa vào hũ", nên không cộng vào unallocatedBalance nữa.
+      // Dùng unallocatedBalance để trả chi phí cố định.
+      const unallocatedChange = -totalFixed;
       await (tx as any).user.update({
         where: { id: userId },
         data: { unallocatedBalance: { increment: unallocatedChange } },
@@ -342,6 +349,199 @@ export class FinanceService {
     // ── Gamification ───────────────────────────────────────────────────────
     const newlyUnlocked = await this.gamification.awardPoints(
       userId, 100, 'Phân bổ lương vào các hũ tài chính',
+    );
+
+    return { ...result, newlyUnlocked };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PUBLIC: depositToUnallocated
+  // ═══════════════════════════════════════════════════════════════════════════
+  /**
+   * Bước 1 của luồng nạp tiền mới:
+   * Ghi nhận số tiền vào mục "Tiền chưa vào hũ" (Chưa phân bổ).
+   * Không phân bổ ngay — người dùng quyết định sau.
+   */
+  async depositToUnallocated(userId: string, amount: number, note?: string) {
+    const safeAmount = Math.round(amount);
+    if (safeAmount <= 0) throw new BadRequestException('Số tiền phải lớn hơn 0 VNĐ.');
+
+    const txTimestamp = new Date();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // Tìm hoặc tạo pocket "Tiền chưa vào hũ"
+      let unallocatedPocket = await (tx as any).pocket.findFirst({
+        where: { userId, name: 'Tiền chưa vào hũ' },
+      });
+
+      if (!unallocatedPocket) {
+        unallocatedPocket = await (tx as any).pocket.create({
+          data: {
+            userId,
+            name: 'Tiền chưa vào hũ',
+            percentage: 0,
+            balance: 0,
+            isEssential: false,
+          },
+        });
+      }
+
+      // Cộng tiền vào unallocated pocket
+      const updatedPocket = await (tx as any).pocket.update({
+        where: { id: unallocatedPocket.id },
+        data: { balance: { increment: safeAmount } },
+      });
+
+      // Tạo transaction record
+      const transaction = await (tx as any).transaction.create({
+        data: {
+          userId,
+          pocketId: unallocatedPocket.id,
+          amount: safeAmount,
+          type: 'INCOME',
+          title: note || `Nạp tiền vào tài khoản`,
+          category: 'Other',
+          createdAt: txTimestamp,
+          metadata: { source: 'direct_deposit', depositedAt: txTimestamp.toISOString() },
+        },
+      });
+
+      return {
+        success: true,
+        message: 'Đã nạp tiền thành công vào mục Chưa phân bổ',
+        depositedAmount: safeAmount,
+        unallocatedPocketId: unallocatedPocket.id,
+        updatedBalance: Number(updatedPocket.balance),
+        transactionId: transaction.id,
+        timestamp: txTimestamp.toISOString(),
+      };
+    });
+
+    // Gamification: thưởng điểm khi nạp tiền
+    await this.gamification.awardPoints(userId, 20, 'Nạp tiền vào tài khoản');
+
+    return result;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PUBLIC: distributeFromUnallocated
+  // ═══════════════════════════════════════════════════════════════════════════
+  /**
+   * Bước 2 (tùy chọn) của luồng nạp tiền:
+   * Phân bổ tiền từ "Tiền chưa vào hũ" vào các hũ được chỉ định.
+   * Kiểm tra số dư "Chưa phân bổ" đủ trước khi thực hiện.
+   *
+   * @param allocations  Danh sách { pocketId, amount } — tổng amount ≤ unallocated balance
+   * @param mode         'manual' = người dùng tự chia | 'ai' = AI gợi ý dựa trên % default
+   */
+  async distributeFromUnallocated(
+    userId: string,
+    allocations: { pocketId: string; amount: number }[],
+  ) {
+    if (!allocations || allocations.length === 0) {
+      throw new BadRequestException('Danh sách phân bổ không được rỗng.');
+    }
+
+    const totalToDistribute = allocations.reduce((s, a) => s + Math.round(a.amount), 0);
+    if (totalToDistribute <= 0) throw new BadRequestException('Tổng số tiền phân bổ phải lớn hơn 0.');
+
+    // Kiểm tra balance của "Tiền chưa vào hũ"
+    const unallocatedPocket = await this.prisma.pocket.findFirst({
+      where: { userId, name: 'Tiền chưa vào hũ' },
+    });
+    const userRecord = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    const totalUnallocated =
+      Number(unallocatedPocket?.balance || 0) + Number(userRecord?.unallocatedBalance || 0);
+
+    if (totalToDistribute > totalUnallocated) {
+      throw new BadRequestException(
+        `Không đủ số dư chưa phân bổ. Hiện có: ${totalUnallocated.toLocaleString()} VNĐ, ` +
+        `cần: ${totalToDistribute.toLocaleString()} VNĐ.`,
+      );
+    }
+
+    // Validate all target pockets belong to user
+    const targetPocketIds = allocations.map((a) => a.pocketId);
+    const targetPockets = await this.prisma.pocket.findMany({
+      where: { id: { in: targetPocketIds }, userId },
+      select: { id: true, name: true },
+    });
+    if (targetPockets.length !== targetPocketIds.length) {
+      throw new BadRequestException('Một hoặc nhiều hũ không tồn tại hoặc không thuộc về bạn.');
+    }
+
+    const pocketNameMap = Object.fromEntries(targetPockets.map((p) => [p.id, p.name]));
+    const txTimestamp = new Date();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      let remainingToDeduct = totalToDistribute;
+      const updatedPockets: any[] = [];
+
+      // Trừ từ pocket "Tiền chưa vào hũ" trước
+      if (unallocatedPocket && Number(unallocatedPocket.balance) > 0) {
+        const deductFromPocket = Math.min(Number(unallocatedPocket.balance), remainingToDeduct);
+        const updated = await (tx as any).pocket.update({
+          where: { id: unallocatedPocket.id },
+          data: { balance: { decrement: deductFromPocket } },
+        });
+        updatedPockets.push(updated);
+        remainingToDeduct -= deductFromPocket;
+      }
+
+      // Nếu còn thiếu, trừ từ user.unallocatedBalance
+      if (remainingToDeduct > 0) {
+        await (tx as any).user.update({
+          where: { id: userId },
+          data: { unallocatedBalance: { decrement: remainingToDeduct } },
+        });
+      }
+
+      // Cộng tiền vào từng hũ đích + ghi transaction
+      for (const alloc of allocations) {
+        const safeAmt = Math.round(alloc.amount);
+        if (safeAmt <= 0) continue;
+
+        const updated = await (tx as any).pocket.update({
+          where: { id: alloc.pocketId },
+          data: { balance: { increment: safeAmt } },
+        });
+        updatedPockets.push(updated);
+
+        await (tx as any).transaction.create({
+          data: {
+            userId,
+            pocketId: alloc.pocketId,
+            amount: safeAmt,
+            type: 'INCOME',
+            title: `Phân bổ vào hũ: ${pocketNameMap[alloc.pocketId]}`,
+            category: 'Other',
+            createdAt: txTimestamp,
+            metadata: {
+              source: 'distribute_from_unallocated',
+              distributedAt: txTimestamp.toISOString(),
+            },
+          },
+        });
+      }
+
+      return {
+        success: true,
+        message: 'Phân bổ tiền vào các hũ thành công',
+        totalDistributed: totalToDistribute,
+        allocations: allocations.map((a) => ({
+          pocketId: a.pocketId,
+          name: pocketNameMap[a.pocketId],
+          amount: Math.round(a.amount),
+        })),
+        updatedPockets,
+        timestamp: txTimestamp.toISOString(),
+      };
+    });
+
+    // Gamification
+    const newlyUnlocked = await this.gamification.awardPoints(
+      userId, 50, 'Phân bổ tiền vào các hũ tài chính',
     );
 
     return { ...result, newlyUnlocked };

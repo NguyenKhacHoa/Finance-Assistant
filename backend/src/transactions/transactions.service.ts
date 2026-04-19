@@ -38,15 +38,26 @@ export class TransactionsService {
       .filter((t) => t.type === 'EXPENSE')
       .reduce((s, t) => s + Number(t.amount), 0);
 
+    // ── Tính tổng số dư hũ thật (không bao gồm "Tiền chưa vào hũ") ──
     const pockets = await this.prisma.pocket.findMany({ where: { userId } });
-    const pocketTotal = pockets.reduce((s, p) => s + Number(p.balance), 0);
+    const realPockets = pockets.filter((p) => p.name !== 'Tiền chưa vào hũ');
+    const totalBalance = realPockets.reduce((s, p) => s + Number(p.balance), 0);
 
+    // ── Tổng tiền đang trong mục tiêu (có thể expose để dashboard dùng) ──
+    const activeGoals = await this.prisma.savingsGoal.findMany({
+      where: { userId },
+      select: { currentAmount: true },
+    });
+    const totalGoalFunded = activeGoals.reduce((s, g) => s + Number(g.currentAmount), 0);
+
+    // ── unallocatedBalance: tiền lương dư chưa được phân bổ vào hũ nào ──
+    // Nguồn: pocket "Tiền chưa vào hũ" (surplus khi % < 100%) + user.unallocatedBalance (chi phí cố định)
+    // Tách biệt HOÀN TOÀN khỏi totalBalance (tổng các hũ thật)
+    const unallocatedPocket = pockets.find((p) => p.name === 'Tiền chưa vào hũ');
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    const unallocatedBalance = Number(user?.unallocatedBalance || 0);
+    const unallocatedBalance = Math.max(0, Number(unallocatedPocket?.balance || 0) + Number(user?.unallocatedBalance || 0));
 
-    const totalBalance = pocketTotal + unallocatedBalance;
-
-    return { income, expense, balance: income - expense, totalBalance, unallocatedBalance };
+    return { income, expense, balance: income - expense, totalBalance, unallocatedBalance, totalGoalFunded };
   }
 
   // ── GET chart data (income/expense grouped by day) ────────────
@@ -112,6 +123,7 @@ export class TransactionsService {
     category: string;
     pocketId: string;
     type: 'EXPENSE' | 'INCOME' | 'LUONG';
+    source?: 'CASH' | 'BANK';
     metadata?: any;
   }) {
     if (!dto.amount || dto.amount <= 0) throw new BadRequestException('Số tiền phải lớn hơn 0.');
@@ -127,6 +139,7 @@ export class TransactionsService {
       pocketId: dto.pocketId,
       amount: amountDecimal,
       type: dto.type as any,
+      source: (dto.source || 'CASH') as any,
       title: dto.title,
       category: dto.category as any,
       metadata: dto.metadata,

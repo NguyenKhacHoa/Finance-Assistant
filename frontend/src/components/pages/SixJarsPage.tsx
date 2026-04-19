@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { Loader2, Plus, Wallet, Pencil, Trash2 } from 'lucide-react';
 import { authFetch, useAuth } from '../../context/AuthContext';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import AddJarModal from '../modals/AddJarModal';
 import EditJarModal from '../modals/EditJarModal';
-import SalaryHubModal from '../modals/SalaryHubModal';
+import { useNavigate } from 'react-router-dom';
 import { formatVND } from '../../utils/format';
 
 interface Pocket {
@@ -37,66 +38,39 @@ const CustomTooltip = ({ active, payload }: any) => {
 
 export default function SixJarsPage() {
   const { token } = useAuth();
-  const [pockets, setPockets] = useState<Pocket[]>([]);
-  const [unallocatedBalance, setUnallocatedBalance] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isFundModalOpen, setIsFundModalOpen] = useState(false);
   const [editingPocket, setEditingPocket] = useState<Pocket | null>(null);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchPockets = async () => {
-      try {
-        const [pocketsData, statsData] = await Promise.all([
-          authFetch<Pocket[]>('/pockets', {}, token),
-          fetch('http://localhost:3000/transactions/stats', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
-        ]);
-        setPockets(pocketsData);
-        if (statsData?.unallocatedBalance) setUnallocatedBalance(statsData.unallocatedBalance);
-      } catch (e) {
-        console.error('[SixJarsPage] fetch error:', e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    if (token) fetchPockets();
-  }, [token]);
+  const { data: pockets = [], isLoading: loadingPockets } = useQuery({
+    queryKey: ['pockets'],
+    queryFn: () => authFetch<Pocket[]>('/pockets', {}, token),
+    enabled: !!token,
+  });
 
-  useEffect(() => {
-    const handleUpdate = () => {
-      if (!token) return;
-      Promise.all([
-        authFetch<Pocket[]>('/pockets', {}, token),
-        fetch('http://localhost:3000/transactions/stats', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
-      ]).then(([pocketsData, statsData]) => {
-        setPockets(pocketsData);
-        if (statsData?.unallocatedBalance) setUnallocatedBalance(statsData.unallocatedBalance);
-      }).catch(console.error);
-    };
+  const { data: stats, isLoading: loadingStats } = useQuery({
+    queryKey: ['stats'],
+    queryFn: async () => {
+      const res = await fetch('http://localhost:3000/transactions/stats', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Network error');
+      return res.json();
+    },
+    enabled: !!token,
+  });
 
-    window.addEventListener('finance_update', handleUpdate);
-    return () => window.removeEventListener('finance_update', handleUpdate);
-  }, [token]);
+  const loading = loadingPockets || loadingStats;
+  const unallocatedBalance = stats?.unallocatedBalance || 0;
 
   const handleInitialSetup = async () => {
     try {
-      setLoading(true);
-      const data = await authFetch<Pocket[]>('/pockets/init', { method: 'POST' }, token);
-      setPockets(data);
+      await authFetch<Pocket[]>('/pockets/init', { method: 'POST' }, token);
+      queryClient.invalidateQueries({ queryKey: ['pockets'] });
     } catch(err) {
       console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchPocketsRef = async () => {
-    try {
-      const pocketsData = await authFetch<Pocket[]>('/pockets', {}, token);
-      setPockets(pocketsData);
-    } catch (e) {
-      console.error('[SixJarsPage] fetch error:', e);
     }
   };
 
@@ -107,9 +81,8 @@ export default function SixJarsPage() {
     setIsDeleting(id);
     try {
       await authFetch(`/pockets/${id}`, { method: 'DELETE' }, token);
-      fetchPocketsRef();
-      // Báo cập nhật số liệu
-      window.dispatchEvent(new CustomEvent('finance_update'));
+      queryClient.invalidateQueries({ queryKey: ['pockets'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
     } catch (err: any) {
       alert(err.message || 'Lỗi khi xóa hũ');
     } finally {
@@ -117,22 +90,29 @@ export default function SixJarsPage() {
     }
   };
 
-  const totalBalance = pockets.reduce((sum, p) => sum + Number(p.balance), 0) + unallocatedBalance;
+  const realPockets = pockets.filter(p => p.name !== 'Tiền chưa vào hũ');
 
-  let chartData: any[] = pockets.map((p) => ({
+  // "Tổng Số Dư Các Hũ" chỉ tính từ pockets thật, KHÔNG cộng unallocatedBalance
+  const pocketTotalBalance = realPockets.reduce((sum, p) => sum + Number(p.balance), 0);
+
+  // "Tổng tài sản" (trung tâm biểu đồ) = pockets + tiền chưa vào hũ
+  const totalAssets = pocketTotalBalance + unallocatedBalance;
+
+  // Biểu đồ tròn: mỗi hũ thật + phần "Chưa phân bổ" từ số dư thực tế
+  let chartData: any[] = realPockets.map((p) => ({
     name: p.name,
     balance: Number(p.balance),
     percentage: Number(p.percentage),
     fill: undefined // defaults to cycle via colors array
   }));
 
-  const missingPercentage = 100 - pockets.reduce((sum, p) => sum + Number(p.percentage), 0);
-  if (missingPercentage > 0) {
+  // Phần "Chưa phân bổ" trong biểu đồ = unallocatedBalance thực tế (từ backend)
+  if (unallocatedBalance > 0) {
     chartData.push({
       name: 'Chưa phân bổ',
       balance: unallocatedBalance,
-      percentage: Math.max(0, missingPercentage),
-      fill: '#94a3b8' // slate-400
+      percentage: parseFloat(totalAssets > 0 ? ((unallocatedBalance / totalAssets) * 100).toFixed(1) : '0'),
+      fill: '#94a3b8' // Muted grey color for unallocated
     });
   }
 
@@ -151,7 +131,7 @@ export default function SixJarsPage() {
         </div>
         <div className="flex gap-3">
           <motion.button
-            onClick={() => setIsFundModalOpen(true)}
+            onClick={() => navigate('/deposit')}
             whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm bg-[var(--bg-surface)] border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-base)]"
           >
@@ -172,7 +152,7 @@ export default function SixJarsPage() {
         <div className="flex items-center justify-center py-20 min-h-[400px]">
           <Loader2 size={32} className="animate-spin text-[var(--primary)]" />
         </div>
-      ) : pockets.length === 0 ? (
+      ) : realPockets.length === 0 && unallocatedBalance === 0 ? (
         <div className="flex flex-col items-center justify-center py-32 text-center bg-[var(--bg-surface)] rounded-3xl border border-[var(--border)]">
           <Wallet size={48} className="text-[var(--text-muted)] opacity-50 mb-4" />
           <h3 className="text-lg font-bold text-[var(--text-primary)]">Chưa có hũ nào</h3>
@@ -183,7 +163,7 @@ export default function SixJarsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Chart Section */}
           <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-3xl p-6 flex flex-col items-center justify-center min-h-[400px] relative">
-            <h3 className="text-sm font-bold text-[var(--text-muted)] absolute top-6 left-6">Cơ cấu Tài sản</h3>
+            <h3 className="text-sm font-bold text-[var(--text-muted)] absolute top-6 left-6">Cơ cấu Tài sản Thực tế</h3>
             <div className="w-full h-[320px] mt-6">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -196,7 +176,7 @@ export default function SixJarsPage() {
                     innerRadius={80}
                     outerRadius={120}
                     paddingAngle={3}
-                    dataKey="percentage"
+                    dataKey="balance"
                     stroke="none"
                   >
                     {chartData.map((entry, index) => (
@@ -209,14 +189,25 @@ export default function SixJarsPage() {
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center flex-col mt-4">
               <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-bold">Tổng tài sản</p>
               <p className="text-xl font-black text-[var(--text-primary)] mt-0.5">
-                {formatVND(totalBalance)}
+                {formatVND(totalAssets)}
               </p>
             </div>
           </div>
 
           {/* Jars List */}
           <div className="flex flex-col gap-3">
-            {pockets.map((p, i) => {
+            {/* Summary bar: tách biệt Tổng Hũ vs Tiền Chưa Vào Hũ */}
+            <div className="grid grid-cols-2 gap-3 mb-1">
+              <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Tổng Số Dư Các Hũ</p>
+                <p className="text-base font-black mt-1 text-[var(--primary)]">{formatVND(pocketTotalBalance)}</p>
+              </div>
+              <div className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl p-4">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Tiền Chưa Vào Hũ</p>
+                <p className="text-base font-black mt-1 text-yellow-400">{formatVND(unallocatedBalance)}</p>
+              </div>
+            </div>
+            {realPockets.map((p, i) => {
               const displayColor = COLORS[i % COLORS.length];
               return (
                 <motion.div
@@ -241,7 +232,7 @@ export default function SixJarsPage() {
                   </div>
                   <div className="text-right flex flex-col items-end">
                     <p className="font-black text-lg text-[var(--text-primary)]">
-                      {formatVND(Number(p.balance))}
+                       {formatVND(Number(p.balance))}
                     </p>
                     <div className="w-24 h-1.5 bg-[var(--bg-base)] rounded-full mt-2 overflow-hidden mb-3">
                       <div className="h-full rounded-full" style={{ width: `${p.percentage}%`, background: displayColor }} />
@@ -276,21 +267,14 @@ export default function SixJarsPage() {
       <AddJarModal 
         isOpen={isAddModalOpen} 
         onClose={() => setIsAddModalOpen(false)} 
-        onSuccess={() => { fetchPocketsRef(); window.dispatchEvent(new CustomEvent('finance_update')); }} 
+        onSuccess={() => { queryClient.invalidateQueries({ queryKey: ['pockets'] }); queryClient.invalidateQueries({ queryKey: ['stats'] }); }} 
       />
 
       <EditJarModal 
         isOpen={!!editingPocket} 
         onClose={() => setEditingPocket(null)} 
-        onSuccess={() => { fetchPocketsRef(); window.dispatchEvent(new CustomEvent('finance_update')); }} 
+        onSuccess={() => { queryClient.invalidateQueries({ queryKey: ['pockets'] }); queryClient.invalidateQueries({ queryKey: ['stats'] }); }} 
         pocket={editingPocket}
-      />
-
-      <SalaryHubModal 
-        isOpen={isFundModalOpen} 
-        onClose={() => setIsFundModalOpen(false)} 
-        onSuccess={fetchPocketsRef}
-        pockets={pockets}
       />
     </motion.div>
   );

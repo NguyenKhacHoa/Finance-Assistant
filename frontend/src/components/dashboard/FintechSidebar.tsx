@@ -2,15 +2,17 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, CreditCard, PiggyBank, Bot,
   Trophy, Settings, LogOut, ChevronLeft,
-  Landmark,
+  Landmark, Target
 } from 'lucide-react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useQueryClient } from '@tanstack/react-query';
 
 const NAV = [
   { label: 'Dashboard',      icon: <LayoutDashboard size={18} />, path: '/dashboard' },
   { label: 'Giao dịch',      icon: <CreditCard size={18} />,      path: '/transactions' },
-  { label: 'Hũ Tài Chính',     icon: <PiggyBank size={18} />,       path: '/pockets' },
+  { label: 'Hũ Tài Chính',   icon: <PiggyBank size={18} />,       path: '/pockets' },
+  { label: 'Mục Tiêu',       icon: <Target size={18} />,          path: '/goals' },
   { label: 'Gamification',   icon: <Trophy size={18} />,          path: '/rewards' },
   { label: 'AI Trợ lý',      icon: <Bot size={18} />,             path: '/ai' },
 ];
@@ -20,6 +22,7 @@ interface Props { collapsed: boolean; onToggle: () => void; }
 export default function FintechSidebar({ collapsed, onToggle }: Props) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const initial = (user?.name || user?.email || 'U').charAt(0).toUpperCase();
 
@@ -118,7 +121,7 @@ export default function FintechSidebar({ collapsed, onToggle }: Props) {
           </NavLink>
 
           <button
-            onClick={() => { logout(); navigate('/login'); }}
+            onClick={() => { logout({ queryClientRef: queryClient }); navigate('/login'); }}
             className="flex flex-col items-center justify-center p-2 rounded-xl bg-white/5 text-red-400 hover:bg-red-500/10 transition-all"
           >
             <LogOut size={16} />
