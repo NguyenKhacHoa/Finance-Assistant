@@ -128,9 +128,14 @@ export default function NotificationBell() {
                   </p>
                 </div>
               ) : (
-                notifs.map((n) => {
+                    notifs.map((n) => {
                   const cfg = TYPE_CONFIG[n.type];
                   const Icon = cfg.icon;
+
+                  // Prefix & màu cho amount
+                  const amountPrefix = n.type === 'income' ? '+' : n.type === 'expense' ? '-' : '';
+                  const amountColor = n.type === 'income' ? '#34d399' : n.type === 'expense' ? '#f87171' : cfg.color;
+
                   return (
                     <motion.div
                       key={n.id}
@@ -151,12 +156,19 @@ export default function NotificationBell() {
                       <div className="flex-1 min-w-0">
                         <p className="text-xs leading-snug" style={{ color: 'var(--text-primary)' }}>
                           {n.message}
-                          {n.amount !== undefined && (
-                            <span className="font-bold ml-1" style={{ color: cfg.color }}>
-                              {formatVND(n.amount)}
-                            </span>
-                          )}
                         </p>
+                        {n.amount !== undefined && (
+                          <div
+                            className="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-lg text-[11px] font-black"
+                            style={{
+                              background: `${amountColor}15`,
+                              color: amountColor,
+                              border: `1px solid ${amountColor}30`,
+                            }}
+                          >
+                            {amountPrefix}{formatVND(n.amount)}
+                          </div>
+                        )}
                         <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                           {timeAgo(n.ts)}
                         </p>

@@ -21,6 +21,7 @@ enum TransactionType {
   EXPENSE   // Chi tiêu
   LUONG     // Phân bổ lương (salary distribution)
   TRANSFER  // Chuyển giữa các hũ
+  SYSTEM    // Giao dịch hệ thống (hoàn tiền xóa hũ, phân bổ tự động)
 }
 
 // Danh mục chi tiêu/thu nhập — AI sẽ tự phân loại nếu để null
@@ -73,6 +74,10 @@ model User {
   verifyExpiry   DateTime?
   resetToken     String?   // token đặt lại mật khẩu
   resetExpiry    DateTime?
+  
+  // ── 2FA ───────────────────────────────────────────────────
+  twoFactorEnabled Boolean  @default(false)
+  twoFactorSecret  String?
 
   // ── Bank Link Integration ─────────────────────────────────────────
   bankLinked     Boolean   @default(false)

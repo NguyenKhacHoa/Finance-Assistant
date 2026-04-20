@@ -123,6 +123,7 @@ export class BankIntegrationService {
       title: createdTransaction.title,
       description: description,
       date: date || new Date().toISOString(),
+      type: amount > 0 ? 'INCOME' : 'EXPENSE',
     });
 
     return { success: true, transactionId: createdTransaction.id };

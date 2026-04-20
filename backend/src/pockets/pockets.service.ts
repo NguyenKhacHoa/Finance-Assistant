@@ -41,13 +41,41 @@ export class PocketsService {
     return this.getUserPockets(userId);
   }
 
-  // Xóa hũ (Có kiểm tra bảo mật tiền dư)
+  // Xóa hũ — hoàn tiền về unallocated trước khi xóa (Prisma Transaction)
   async deletePocket(userId: string, pocketId: string) {
     const pocket = await this.prisma.pocket.findUnique({ where: { id: pocketId } });
     if (!pocket || pocket.userId !== userId) throw new BadRequestException('Hũ không hợp lệ');
-    if (Number(pocket.balance) > 0) throw new BadRequestException('Bạn phải chuyển hết tiền sang hũ khác trước khi xóa');
-    
-    await this.prisma.pocket.delete({ where: { id: pocketId } });
+
+    const pocketBalance = Number(pocket.balance);
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Hoàn toàn bộ balance của hũ vào unallocatedBalance của User
+      //    Phải hoàn tiền TRƯỚC khi xóa để tránh vi phạm foreign key SetNull
+      if (pocketBalance > 0) {
+        // Bước 1a: Cộng balance vào unallocatedBalance của User
+        await tx.user.update({
+          where: { id: userId },
+          data: { unallocatedBalance: { increment: pocketBalance } },
+        });
+
+        // Bước 1b: Tạo bản ghi lịch sử giao dịch (type: SYSTEM)
+        await (tx as any).transaction.create({
+          data: {
+            userId,
+            pocketId: pocket.id,
+            amount: pocketBalance,
+            type: 'SYSTEM',
+            source: 'SYSTEM',
+            title: `Hoàn tiền xóa hũ ${pocket.name}`,
+            category: 'Other',
+          },
+        });
+      }
+
+      // 2. Xóa hũ sau khi đã hoàn tiền và tạo lịch sử thành công
+      await tx.pocket.delete({ where: { id: pocketId } });
+    });
+
     return this.getUserPockets(userId);
   }
 

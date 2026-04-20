@@ -2,7 +2,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, CreditCard, PiggyBank, Bot,
   Trophy, Settings, LogOut, ChevronLeft,
-  Landmark, Target
+  Landmark, Target, PlusCircle
 } from 'lucide-react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -11,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 const NAV = [
   { label: 'Dashboard',      icon: <LayoutDashboard size={18} />, path: '/dashboard' },
   { label: 'Giao dịch',      icon: <CreditCard size={18} />,      path: '/transactions' },
+  { label: 'Nạp Tiền',       icon: <PlusCircle size={18} />,      path: '/deposit' },
   { label: 'Hũ Tài Chính',   icon: <PiggyBank size={18} />,       path: '/pockets' },
   { label: 'Mục Tiêu',       icon: <Target size={18} />,          path: '/goals' },
   { label: 'Gamification',   icon: <Trophy size={18} />,          path: '/rewards' },

@@ -49,7 +49,35 @@ export class AlertsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   // Gửi thông báo giao dịch ngân hàng
-  sendBankTransactionAlert(userId: string, data: any) {
+  sendBankTransactionAlert(userId: string, data: {
+    transactionId?: string,
+    amount: number,
+    title: string,
+    description?: string,
+    date: string,
+    type: 'INCOME' | 'EXPENSE'
+  }) {
     this.server.to(`user_${userId}`).emit('new_bank_transaction', data);
+  }
+
+  // Gửi thông báo AI Agent đã thực thi lệnh thành công
+  sendAiActionAlert(userId: string, data: {
+    actionType:
+      | 'create_transaction'
+      | 'update_pocket_percentage'
+      | 'manage_goal'
+      | 'create_pocket'
+      | 'distribute_funds'
+      | 'create_goal'
+      | 'update_goal'
+      | 'delete_goal'
+      | 'edit_transaction'
+      | 'delete_transaction';
+    title: string;
+    summary: string;
+    amount?: number;
+    type?: 'INCOME' | 'EXPENSE';
+  }) {
+    this.server.to(`user_${userId}`).emit('ai_action', data);
   }
 }

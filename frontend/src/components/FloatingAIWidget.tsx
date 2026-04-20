@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bot, Send, X, Loader2, Sparkles, MessageCircle } from 'lucide-react';
+import { Send, X, Loader2, Sparkles, MessageCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 interface ChatMessage {
@@ -65,7 +65,7 @@ export default function FloatingAIWidget() {
     setIsLoading(true);
 
     try {
-      const res = await fetch('http://localhost:3000/ai/chat', {
+      const res = await fetch('http://localhost:3000/ai/agent-chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -77,10 +77,20 @@ export default function FloatingAIWidget() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.message || 'Lỗi server');
 
+      // Nếu Agent đã thực thi lệnh, thêm summary badge vào message
+      let replyContent = data.reply ?? 'Xin lỗi, mình đang bận. Vui lòng thử lại sau!';
+      if (data.actionsExecuted?.length > 0) {
+        const successCount = data.actionsExecuted.filter((a: any) => a.result === 'success').length;
+        const errorCount = data.actionsExecuted.filter((a: any) => a.result === 'error').length;
+        if (successCount > 0) {
+          replyContent += `\n\n✅ Đã thực thi ${successCount} lệnh thành công${errorCount > 0 ? `, ${errorCount} lỗi` : ''}.`;
+        }
+      }
+
       const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: data.reply ?? 'Xin lỗi, mình đang bận. Vui lòng thử lại sau!',
+        content: replyContent,
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
@@ -103,7 +113,8 @@ export default function FloatingAIWidget() {
       dragConstraints={{ left: -1000, right: 0, top: -800, bottom: 0 }}
       dragElastic={0.1}
       dragMomentum={false}
-      className="fixed z-[9999] bottom-6 right-6 flex flex-col items-end"
+      className="flex flex-col items-end"
+      style={{ position: 'fixed', zIndex: 9999, bottom: '20px', right: '20px' }}
       initial={{ y: 50, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
     >
@@ -118,12 +129,14 @@ export default function FloatingAIWidget() {
             onPointerDown={(e) => e.stopPropagation()} // Prevent dragging when clicking inside the window
           >
             {/* Header */}
-            <div className="bg-gradient-to-r from-indigo-500 to-purple-600 p-3 flex items-center justify-between text-white cursor-move">
+            <div className="bg-gradient-to-r from-violet-600 to-purple-700 p-3 flex items-center justify-between text-white cursor-move">
                <div className="flex items-center gap-2">
-                  <Bot size={18} />
+                  <div className="w-8 h-8 rounded-lg bg-white/15 border border-white/25 flex items-center justify-center">
+                    <Sparkles size={16} className="animate-pulse" />
+                  </div>
                   <div>
-                      <h3 className="font-bold text-sm">Finance Mini-AI</h3>
-                      <p className="text-[10px] opacity-80 flex items-center gap-1"><Sparkles size={10} /> Trợ lý tức thì</p>
+                      <h3 className="font-bold text-sm">ARIA Agent</h3>
+                      <p className="text-[10px] opacity-80 flex items-center gap-1"><Sparkles size={10} /> Có thể thực thi lệnh tài chính</p>
                   </div>
                </div>
                <button 
@@ -149,9 +162,9 @@ export default function FloatingAIWidget() {
                ))}
                {isLoading && (
                    <div className="flex justify-start">
-                       <div className="px-3 py-2 rounded-xl rounded-tl-sm text-sm bg-[var(--bg-surface)] border border-[var(--border)] shadow-sm flex items-center gap-2">
-                           <Loader2 size={14} className="animate-spin text-indigo-500" />
-                           <span className="text-[var(--text-muted)] text-xs">AI đang nghĩ...</span>
+                       <div className="px-3 py-2 rounded-xl rounded-tl-sm text-sm bg-[var(--bg-surface)] border border-violet-500/40 shadow-sm flex items-center gap-2">
+                           <Loader2 size={14} className="animate-spin text-violet-400" />
+                           <span className="text-violet-300 text-xs">ARIA đang xử lý lệnh...</span>
                        </div>
                    </div>
                )}
@@ -166,8 +179,8 @@ export default function FloatingAIWidget() {
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                      placeholder="Hỏi nhanh về tiền..."
-                      className="w-full pl-3 pr-10 py-2.5 bg-[var(--bg-base)] border border-[var(--border)] rounded-xl text-sm outline-none focus:border-indigo-500 text-[var(--text-primary)] transition-colors"
+                      placeholder='"Ghi 50k cafe vào hũ Thiết yếu"...'
+                      className="w-full pl-3 pr-10 py-2.5 bg-[var(--bg-base)] border border-[var(--border)] rounded-xl text-sm outline-none focus:border-violet-500 text-[var(--text-primary)] transition-colors"
                    />
                    <button 
                       onClick={sendMessage}

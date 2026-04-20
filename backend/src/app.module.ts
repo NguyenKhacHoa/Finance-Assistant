@@ -28,7 +28,6 @@ import { BankIntegrationModule } from './bank-integration/bank-integration.modul
     AdminModule,
     ProfileModule,
     FinanceModule,
-    BankIntegrationModule,
   ],
   controllers: [],
   providers: [],

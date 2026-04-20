@@ -54,6 +54,9 @@ export interface AuthUser {
   isVerified: boolean;
   rewardPoints?: number;
   loginStreak?: number;
+  googleId?: string | null;
+  hasPassword?: boolean;
+  twoFactorEnabled?: boolean;
 }
 
 interface AuthCtx {
@@ -68,6 +71,8 @@ interface AuthCtx {
   loginWithToken: (t: string) => Promise<void>;
   sendOtp:        (phone: string) => Promise<{ message: string }>;
   verifyOtp:      (phone: string, otp: string) => Promise<void>;
+  updateProfile:  (dto: { name?: string; phone?: string; currentPassword?: string }) => Promise<void>;
+  changePassword: (dto: { currentPassword: string; newPassword: string }) => Promise<{ message: string }>;
 }
 
 const Ctx = createContext<AuthCtx | null>(null);
@@ -152,7 +157,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       '/auth/register', { method: 'POST', body: JSON.stringify(dto) }
     );
     persist(data.access_token);
+    // Set user ngay từ response (đã có name + phone từ signToken)
     setUser(data.user);
+    // Sau đó fetch /auth/me để lấy đầy đủ các field (rewardPoints, loginStreak, avatarUrl...)
+    try {
+      const me = await authFetch<AuthUser>('/auth/me', {}, data.access_token);
+      setUser(me);
+    } catch {}
   };
 
   const logout = useCallback((opts?: { queryClientRef?: { clear: () => void } }) => {
@@ -184,8 +195,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.user);
   };
 
+  const updateProfile = async (dto: { name?: string; phone?: string; currentPassword?: string }) => {
+    if (!token) return;
+    const updatedUser = await authFetch<AuthUser>('/profile/info', {
+      method: 'PUT',
+      body: JSON.stringify(dto),
+    }, token);
+    setUser(prev => prev ? { ...prev, ...updatedUser } : updatedUser);
+  };
+
+  const changePassword = async (dto: { currentPassword: string; newPassword: string }) => {
+    if (!token) throw new Error('Không có quyền thay đổi mật khẩu.');
+    return authFetch<{ message: string }>('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(dto),
+    }, token);
+  };
+
   return (
-    <Ctx.Provider value={{ user, token, loading, isServerAlive, login, register, logout, refreshMe, loginWithToken, sendOtp, verifyOtp }}>
+    <Ctx.Provider value={{
+      user, token, loading, isServerAlive,
+      login, register, logout, refreshMe,
+      loginWithToken, sendOtp, verifyOtp,
+      updateProfile, changePassword
+    }}>
       {children}
     </Ctx.Provider>
   );

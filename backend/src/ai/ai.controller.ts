@@ -312,5 +312,41 @@ export class AiController {
     const reply = await this.aiService.chatAssistant(userId, body.message);
     return { reply };
   }
+
+  // ══════════════════════════════════════════════════════════
+  //  POST /ai/agent-chat  – Agent thực thi lệnh tài chính
+  // ══════════════════════════════════════════════════════════
+  /**
+   * Giao tiếp với ARIA — AI Agent có khả năng THỰC THI lệnh tài chính.
+   *
+   * Gemini 2.5 Flash Function Calling sẽ tự quyết định khi nào cần gọi tool,
+   * Backend thực thi DB và bắn Socket `ai_action` để Frontend rung chuông.
+   *
+   * Body: { "message": "Ghi cho tôi chi tiêu 150k ăn trưa vào hũ Thiết yếu" }
+   *
+   * Response:
+   * {
+   *   "reply": "Xong! Em đã thêm chi tiêu 150.000 VNĐ vào hũ Thiết yếu rồi nhé 🎉",
+   *   "actionsExecuted": [
+   *     {
+   *       "tool": "create_transaction",
+   *       "args": { "amount": 150000, "type": "EXPENSE", "title": "Ăn trưa", "pocketId": "..." },
+   *       "result": "success",
+   *       "detail": "Giao dịch \"Ăn trưa\" 150.000 VNĐ (EXPENSE) đã được tạo thành công."
+   *     }
+   *   ]
+   * }
+   */
+  @Post('agent-chat')
+  async agentChat(@Req() req: any, @Body() body: { message: string }) {
+    const userId: string = req.user?.sub;
+    if (!body.message?.trim()) {
+      throw new BadRequestException('Thiếu trường message.');
+    }
+    this.logger.log(`[AGENT-CHAT] userId=${userId} | "${body.message.slice(0, 80)}"`);
+    const result = await this.aiService.agentChat(userId, body.message);
+    return result;
+  }
 }
+
 

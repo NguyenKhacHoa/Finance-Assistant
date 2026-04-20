@@ -7,6 +7,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
+import { authenticator } from 'otplib';
+import * as QRCode from 'qrcode';
 
 @Injectable()
 export class AuthService {
@@ -64,7 +66,7 @@ export class AuthService {
     await this.sendVerifyEmail(user.email, user.name ?? 'bạn', verifyToken).catch(() => {});
 
     // Cấp token ngay để FE có thể load trang (isVerified=false)
-    return this.signToken(user.id, user.email, user.role, user.isVerified);
+    return this.signToken(user);
   }
 
   // ────────────────────────────────────────────────────────
@@ -78,21 +80,85 @@ export class AuthService {
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Mật khẩu không đúng.');
 
-    return this.signToken(user.id, user.email, user.role, user.isVerified);
+    return this.signToken(user);
   }
 
   // ────────────────────────────────────────────────────────
   //  GET ME
   // ────────────────────────────────────────────────────────
   async getMe(userId: string) {
-    return this.prisma.user.findUnique({
+    const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true, email: true, name: true, phone: true,
         avatarUrl: true, role: true, rewardPoints: true,
         loginStreak: true, isVerified: true, createdAt: true,
+        googleId: true, passwordHash: true, twoFactorEnabled: true,
       },
     });
+    if (!user) return null;
+    const { passwordHash, ...rest } = user;
+    return { ...rest, hasPassword: !!passwordHash };
+  }
+
+  // ────────────────────────────────────────────────────────
+  //  CHANGE PASSWORD (chỉ dành cho Email Account)
+  // ────────────────────────────────────────────────────────
+  async changePassword(userId: string, dto: { currentPassword: string; newPassword: string }) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Người dùng không tồn tại.');
+
+    // Guard: Tài khoản Google không có mật khẩu local
+    if (user.googleId && !user.passwordHash) {
+      throw new BadRequestException(
+        'Tài khoản Google không thể đổi mật khẩu tại đây. Vui lòng quản lý mật khẩu qua Google.',
+      );
+    }
+    if (!user.passwordHash) {
+      throw new BadRequestException('Tài khoản này chưa có mật khẩu (đăng nhập bằng Google/OTP).');
+    }
+
+    const ok = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    if (!ok) throw new BadRequestException('Mật khẩu hiện tại không đúng.');
+
+    if (dto.newPassword.length < 8) {
+      throw new BadRequestException('Mật khẩu mới phải có ít nhất 8 ký tự.');
+    }
+    if (dto.newPassword === dto.currentPassword) {
+      throw new BadRequestException('Mật khẩu mới phải khác mật khẩu hiện tại.');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 12);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+    return { message: 'Đổi mật khẩu thành công!' };
+  }
+
+  // ────────────────────────────────────────────────────────
+  //  UPDATE PROFILE (name, phone)
+  // ────────────────────────────────────────────────────────
+  async updateProfile(userId: string, dto: { name?: string; phone?: string }) {
+    const PHONE_REGEX = /^(0|\+84)(3[2-9]|5[6-9]|7[06-9]|8[1-9]|9[0-9])\d{7}$/;
+
+    if (dto.phone && !PHONE_REGEX.test(dto.phone)) {
+      throw new BadRequestException('Số điện thoại không đúng định dạng Việt Nam.');
+    }
+    if (dto.name !== undefined && dto.name.trim().length < 2) {
+      throw new BadRequestException('Họ và tên phải có ít nhất 2 ký tự.');
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone || null } : {}),
+      },
+      select: { id: true, name: true, phone: true, email: true, avatarUrl: true, role: true, isVerified: true, googleId: true, passwordHash: true, rewardPoints: true, loginStreak: true },
+    });
+    const { passwordHash, ...rest } = updated;
+    return { ...rest, hasPassword: !!passwordHash };
   }
 
   // ────────────────────────────────────────────────────────
@@ -167,13 +233,70 @@ export class AuthService {
   }
 
   // ────────────────────────────────────────────────────────
+  //  2FA ENGINES
+  // ────────────────────────────────────────────────────────
+  async generateTwoFactorSecret(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Người dùng không tồn tại.');
+    if (user.twoFactorEnabled) throw new BadRequestException('Bảo mật 2 lớp đã được bật.');
+
+    // Tạo secret mới
+    const secret = authenticator.generateSecret();
+    const otpauthUrl = authenticator.keyuri(user.email, 'Finance Assistant', secret);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorSecret: secret },
+    });
+
+    const qrCodeUrl = await QRCode.toDataURL(otpauthUrl);
+    return { secret, qrCode: qrCodeUrl };
+  }
+
+  async enableTwoFactor(userId: string, token: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || (!user.twoFactorSecret)) {
+      throw new BadRequestException('Bạn chưa khởi tạo mã bảo mật 2 lớp.');
+    }
+
+    const isValid = authenticator.verify({ token, secret: user.twoFactorSecret });
+    if (!isValid) {
+      throw new BadRequestException('Mã xác nhận không hợp lệ hoặc đã hết hạn.');
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorEnabled: true },
+    });
+    return { message: 'Bật bảo mật 2 lớp thành công!' };
+  }
+
+  async disableTwoFactor(userId: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorEnabled: false, twoFactorSecret: null },
+    });
+    return { message: 'Đã tắt bảo mật 2 lớp.' };
+  }
+
+  // ────────────────────────────────────────────────────────
   //  HELPERS
   // ────────────────────────────────────────────────────────
-  private signToken(userId: string, email: string, role: string, isVerified: boolean) {
-    const payload = { sub: userId, email, role };
+  private signToken(user: { id: string; email: string; role: string; isVerified: boolean; name?: string | null; phone?: string | null; googleId?: string | null; passwordHash?: string | null; hasPassword?: boolean; twoFactorEnabled?: boolean }) {
+    const payload = { sub: user.id, email: user.email, role: user.role };
     return {
       access_token: this.jwt.sign(payload),
-      user: { id: userId, email, role, isVerified },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name ?? null,
+        phone: user.phone ?? null,
+        role: user.role,
+        isVerified: user.isVerified,
+        googleId: user.googleId ?? null,
+        hasPassword: user.hasPassword !== undefined ? user.hasPassword : !!user.passwordHash,
+        twoFactorEnabled: user.twoFactorEnabled ?? false,
+      },
     };
   }
 
@@ -240,7 +363,7 @@ export class AuthService {
       });
     }
 
-    return this.signToken(user.id, user.email, user.role, user.isVerified);
+    return this.signToken(user);
   }
 
   // ────────────────────────────────────────────────────────
@@ -294,6 +417,6 @@ export class AuthService {
       });
     }
 
-    return this.signToken(user.id, user.email, user.role, user.isVerified);
+    return this.signToken(user);
   }
 }

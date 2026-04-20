@@ -73,6 +73,27 @@ export class FinanceService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // CORE PRIVATE: calculateMaxCapacity
+  // ═══════════════════════════════════════════════════════════════════════════
+  /**
+   * Tính sức chứa tối đa của một hũ theo công thức:
+   *   Max_Balance = (Total_Pockets_Balance + unallocatedBalance) × (pocketPercentage / 100)
+   *
+   * @param totalPocketsBalance  Tổng balance của TẤT CẢ hũ thường (không tính 'Tiền chưa vào hũ')
+   * @param unallocatedBalance   Tổng số dư chưa phân bổ (pocket + user.unallocatedBalance)
+   * @param pocketPercentage     Tỷ lệ % của hũ cần tính
+   * @returns                    Số dư tối đa được phép của hũ
+   */
+  private calculateMaxCapacity(
+    totalPocketsBalance: number,
+    unallocatedBalance: number,
+    pocketPercentage: number,
+  ): number {
+    const total = totalPocketsBalance + unallocatedBalance;
+    return total * (pocketPercentage / 100);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // CORE PRIVATE: distributeIncomeToPockets
   // ═══════════════════════════════════════════════════════════════════════════
   /**
@@ -222,37 +243,72 @@ export class FinanceService {
       let totalAllocated = 0;
       const txTimestamp = new Date(); // timestamp thống nhất cho cả batch
 
-      // ── B1: Nạp tiền vào từng hũ ───────────────────────────────────────
+      // 0. Tính tổng tài sản hiện tại (TRƯỚC khi nạp lương) để làm baseline Max Capacity
+      const allPocketsTx = await (tx as any).pocket.findMany({ where: { userId } });
+      const userRecordTx = await (tx as any).user.findUnique({ where: { id: userId } });
+      const pocketTotalBalance = allPocketsTx
+        .filter((p: any) => p.name !== 'Tiền chưa vào hũ')
+        .reduce((sum: number, p: any) => sum + Number(p.balance), 0);
+      const unallocatedTotal =
+        Number(allPocketsTx.find((p: any) => p.name === 'Tiền chưa vào hũ')?.balance || 0) +
+        Number(userRecordTx?.unallocatedBalance || 0);
+      // Tổng tài sản bao gồm cả lương sắp nạp vào
+      const totalAssets = pocketTotalBalance + unallocatedTotal + safeTotal;
+
+      // ── B1: Nạp tiền vào từng hũ (soft-cap: nạp đến tối đa, thừa → unallocated) ─
       for (const dist of distributions) {
         if (dist.allocatedAmount <= 0) continue; // bỏ qua hũ 0%
 
-        const updated = await tx.pocket.update({
-          where: { id: dist.pocketId },
-          data: { balance: { increment: dist.allocatedAmount } },
-        });
-        updatedPockets.push(updated);
-        totalAllocated += dist.allocatedAmount;
+        const pocket = allPocketsTx.find((p: any) => p.id === dist.pocketId);
+        if (!pocket) continue;
 
-        await tx.transaction.create({
-          data: {
-            userId,
-            pocketId: dist.pocketId,
-            amount: dist.allocatedAmount,
-            type: 'INCOME',
-            title: `Phân bổ lương → ${dist.name} (${dist.percentage}%)`,
-            category: 'Salary',
-            createdAt: txTimestamp,
-            metadata: {
-              source: 'salary_distribution',
-              originalTotal: safeTotal,
-              percentage: dist.percentage,
-              allocatedAmount: dist.allocatedAmount,
+        // Sử dụng calculateMaxCapacity với totalAssets đã bao gồm lương
+        const maxCapacity = this.calculateMaxCapacity(
+          totalAssets - unallocatedTotal,  // phần pocket trong totalAssets
+          unallocatedTotal,                 // phần unallocated trong totalAssets
+          Number(pocket.percentage),
+        );
+        let actualAmountToFund = dist.allocatedAmount;
+        const projectedBalance = Number(pocket.balance) + actualAmountToFund;
+
+        if (projectedBalance > maxCapacity) {
+          // Soft overflow: chỉ nạp đến mức tối đa, phần thừa dồn về unallocated
+          actualAmountToFund = Math.max(0, Math.floor(maxCapacity - Number(pocket.balance)));
+          this.logger.log(
+            `[distributeSalary] Hũ "${dist.name}" đầy (max: ${maxCapacity.toLocaleString()} VNĐ). ` +
+            `Nạp: ${actualAmountToFund.toLocaleString()} VNĐ, thừa: ${(dist.allocatedAmount - actualAmountToFund).toLocaleString()} VNĐ → unallocated`,
+          );
+        }
+
+        if (actualAmountToFund > 0) {
+          const updated = await (tx as any).pocket.update({
+            where: { id: dist.pocketId },
+            data: { balance: { increment: actualAmountToFund } },
+          });
+          updatedPockets.push(updated);
+          totalAllocated += actualAmountToFund;
+
+          await (tx as any).transaction.create({
+            data: {
+              userId,
+              pocketId: dist.pocketId,
+              amount: actualAmountToFund,
+              type: 'INCOME',
+              title: `Phân bổ lương → ${dist.name} (${dist.percentage}%)`,
+              category: 'Salary',
+              createdAt: txTimestamp,
+              metadata: {
+                source: 'salary_distribution',
+                originalTotal: safeTotal,
+                percentage: dist.percentage,
+                allocatedAmount: actualAmountToFund,
+              },
             },
-          },
-        });
+          });
+        }
       }
 
-      // ── B2: Surplus → Tiền chưa vào hũ ──────────────────────────
+      // ── B2: Surplus (% < 100% HOẶC hũ đầy theo giới hạn) → unallocated ──
       const surplus = Math.max(0, safeTotal - totalAllocated);
       const targetTotal = targetPockets.reduce((s, p) => s + p.percentage, 0);
       if (surplus > 0) {
@@ -497,10 +553,39 @@ export class FinanceService {
         });
       }
 
+      // Tính tổng tài sản SAU KHI đã trừ khỏi unallocated (snapshot mới nhất trong transaction)
+      const allPocketsTx = await (tx as any).pocket.findMany({ where: { userId } });
+      const userRecordTx = await (tx as any).user.findUnique({ where: { id: userId } });
+      const pocketTotalBalance = allPocketsTx
+        .filter((p: any) => p.name !== 'Tiền chưa vào hũ')
+        .reduce((sum: number, p: any) => sum + Number(p.balance), 0);
+      const unallocatedTotalTx =
+        Number(allPocketsTx.find((p: any) => p.name === 'Tiền chưa vào hũ')?.balance || 0) +
+        Number(userRecordTx?.unallocatedBalance || 0);
+      const totalAssets = pocketTotalBalance + unallocatedTotalTx;
+
       // Cộng tiền vào từng hũ đích + ghi transaction
       for (const alloc of allocations) {
         const safeAmt = Math.round(alloc.amount);
         if (safeAmt <= 0) continue;
+
+        const pocket = allPocketsTx.find((p: any) => p.id === alloc.pocketId);
+        if (!pocket) continue;
+
+        // Hard-cap: dùng calculateMaxCapacity với snapshot hiện tại trong transaction
+        const maxCapacity = this.calculateMaxCapacity(
+          pocketTotalBalance,
+          unallocatedTotalTx,
+          Number(pocket.percentage),
+        );
+        const projectedBalance = Number(pocket.balance) + safeAmt;
+
+        if (projectedBalance > maxCapacity) {
+          throw new BadRequestException(
+            `Hũ [${pocket.name}] đã đầy theo tỷ lệ ${pocket.percentage}%. ` +
+            `Hãy tăng tỷ lệ % để nạp thêm.`,
+          );
+        }
 
         const updated = await (tx as any).pocket.update({
           where: { id: alloc.pocketId },
@@ -513,7 +598,8 @@ export class FinanceService {
             userId,
             pocketId: alloc.pocketId,
             amount: safeAmt,
-            type: 'INCOME',
+            type: 'TRANSFER',
+            source: 'SYSTEM',
             title: `Phân bổ vào hũ: ${pocketNameMap[alloc.pocketId]}`,
             category: 'Other',
             createdAt: txTimestamp,

@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShieldCheck, ArrowRight, X, Lock, Eye, AlertTriangle } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
 
 interface BankLinkTermsModalProps {
   isOpen: boolean;

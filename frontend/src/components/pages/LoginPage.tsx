@@ -71,7 +71,13 @@ export default function CustomLogin({ initialMode = 'login' }: Props) {
   };
 
   const handleSendOtp = async (e: React.FormEvent) => {
-    e.preventDefault(); setLoading(true); clear();
+    e.preventDefault(); 
+    const PHONE_REGEX = /^(0|\+84)(3[2-9]|5[6-9]|7[06-9]|8[1-9]|9[0-9])\d{7}$/;
+    if (!PHONE_REGEX.test(phone)) {
+      setErr('Số điện thoại không đúng định dạng Việt Nam.');
+      return;
+    }
+    setLoading(true); clear();
     try {
       await sendOtp(phone);
       setOk('Đã gửi mã OTP, vui lòng kiểm tra Console (Backend) nha.');
@@ -105,7 +111,13 @@ export default function CustomLogin({ initialMode = 'login' }: Props) {
 
   // ── LOGIN ─────────────────────────────────────────────
   const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault(); setLoading(true); clear();
+    e.preventDefault(); 
+    const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!EMAIL_REGEX.test(email)) {
+      setErr('Email không hợp lệ.');
+      return;
+    }
+    setLoading(true); clear();
     try {
       await login(email, pw, remember);
       navigate('/dashboard');
@@ -117,6 +129,11 @@ export default function CustomLogin({ initialMode = 'login' }: Props) {
   // ── REGISTER ──────────────────────────────────────────
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const PHONE_REGEX = /^(0|\+84)(3[2-9]|5[6-9]|7[06-9]|8[1-9]|9[0-9])\d{7}$/;
+    
+    if (!EMAIL_REGEX.test(email)) { setErr('Email không hợp lệ.'); return; }
+    if (phone && !PHONE_REGEX.test(phone)) { setErr('Số điện thoại không đúng định dạng Việt Nam.'); return; }
     if (pw !== pwC)    { setErr('Mật khẩu xác nhận không khớp.'); return; }
     if (pw.length < 8) { setErr('Mật khẩu phải có ít nhất 8 ký tự.'); return; }
     setLoading(true); clear();

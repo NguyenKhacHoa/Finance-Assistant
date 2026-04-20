@@ -201,8 +201,31 @@ export class ProfileService {
 
   async updateProfile(
     userId: string,
-    data: { name?: string; avatarUrl?: string; phone?: string },
+    data: { name?: string; avatarUrl?: string; phone?: string; currentPassword?: string },
   ) {
+    const PHONE_REGEX = /^(0|\+84)(3[2-9]|5[6-9]|7[06-9]|8[1-9]|9[0-9])\d{7}$/;
+    if (data.phone && !PHONE_REGEX.test(data.phone)) {
+      throw new BadRequestException('Số điện thoại không đúng định dạng Việt Nam.');
+    }
+    if (data.name !== undefined && data.name.trim().length < 2) {
+      throw new BadRequestException('Họ và tên phải có ít nhất 2 ký tự.');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new BadRequestException('Không tìm thấy người dùng');
+    }
+
+    if (data.phone && data.phone !== user.phone && user.passwordHash) {
+      if (!data.currentPassword) {
+        throw new BadRequestException('Mật khẩu xác nhận không chính xác.'); // Bắt buộc báo lỗi nếu thiếu
+      }
+      const isValid = await bcrypt.compare(data.currentPassword, user.passwordHash);
+      if (!isValid) {
+        throw new BadRequestException('Mật khẩu xác nhận không chính xác.');
+      }
+    }
+
     return this.prisma.user.update({
       where: { id: userId },
       data: {

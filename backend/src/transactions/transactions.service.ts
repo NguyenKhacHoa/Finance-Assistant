@@ -197,4 +197,87 @@ export class TransactionsService {
 
     return transaction;
   }
+
+  // ── EDIT transaction ─────────────────────────────────────────
+  async editTransaction(userId: string, transactionId: string, dto: {
+    title?: string;
+    amount?: number;
+    category?: string;
+  }) {
+    const existing = await this.prisma.transaction.findUnique({ where: { id: transactionId } });
+    if (!existing || existing.userId !== userId) {
+      throw new BadRequestException('Không tìm thấy giao dịch hoặc không có quyền truy cập.');
+    }
+
+    const oldAmount = Number(existing.amount);
+    const newAmount = dto.amount !== undefined ? Math.round(dto.amount) : oldAmount;
+    const delta = newAmount - oldAmount; // dương: tăng tiền, âm: giảm tiền
+
+    return this.prisma.$transaction(async (tx) => {
+      // Rollback số dư hũ tương ứng nếu amount thay đổi
+      if (delta !== 0 && existing.pocketId) {
+        const pocket = await (tx as any).pocket.findUnique({ where: { id: existing.pocketId } });
+        if (pocket && pocket.userId === userId) {
+          if (existing.type === 'INCOME' || existing.type === 'LUONG') {
+            // INCOME: cũ cộng vào hũ → tăng thêm delta
+            await (tx as any).pocket.update({
+              where: { id: existing.pocketId },
+              data: { balance: { increment: delta } },
+            });
+          } else if (existing.type === 'EXPENSE') {
+            // EXPENSE: cũ trừ hũ → trừ thêm delta (delta âm = refund)
+            const newBalance = Number(pocket.balance) - delta;
+            if (newBalance < 0) throw new BadRequestException('Số dư hũ không đủ sau khi chỉnh sửa.');
+            await (tx as any).pocket.update({
+              where: { id: existing.pocketId },
+              data: { balance: { decrement: delta } },
+            });
+          }
+        }
+      }
+
+      return (tx as any).transaction.update({
+        where: { id: transactionId },
+        data: {
+          ...(dto.title !== undefined && { title: dto.title }),
+          ...(dto.amount !== undefined && { amount: newAmount }),
+          ...(dto.category !== undefined && { category: dto.category as any }),
+        },
+      });
+    });
+  }
+
+  // ── DELETE transaction ───────────────────────────────────────
+  async deleteTransaction(userId: string, transactionId: string) {
+    const existing = await this.prisma.transaction.findUnique({ where: { id: transactionId } });
+    if (!existing || existing.userId !== userId) {
+      throw new BadRequestException('Không tìm thấy giao dịch hoặc không có quyền truy cập.');
+    }
+
+    const amount = Number(existing.amount);
+
+    await this.prisma.$transaction(async (tx) => {
+      // Rollback số dư hũ
+      if (existing.pocketId && amount > 0) {
+        const pocket = await (tx as any).pocket.findUnique({ where: { id: existing.pocketId } });
+        if (pocket && pocket.userId === userId) {
+          if (existing.type === 'INCOME' || existing.type === 'LUONG') {
+            await (tx as any).pocket.update({
+              where: { id: existing.pocketId },
+              data: { balance: { decrement: amount } },
+            });
+          } else if (existing.type === 'EXPENSE') {
+            await (tx as any).pocket.update({
+              where: { id: existing.pocketId },
+              data: { balance: { increment: amount } },
+            });
+          }
+        }
+      }
+
+      await (tx as any).transaction.delete({ where: { id: transactionId } });
+    });
+
+    return { success: true, deletedId: transactionId };
+  }
 }

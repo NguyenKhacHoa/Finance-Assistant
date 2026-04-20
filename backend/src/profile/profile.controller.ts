@@ -40,7 +40,7 @@ export class ProfileController {
   // ─── Profile Info & Settings ──────────────────────────────────
 
   @Put('info')
-  async updateProfileInfo(@Req() req: any, @Body() body: { name?: string; avatarUrl?: string; phone?: string }) {
+  async updateProfileInfo(@Req() req: any, @Body() body: { name?: string; avatarUrl?: string; phone?: string; currentPassword?: string }) {
     const userId = req.user.sub;
     return this.profileService.updateProfile(userId, body);
   }

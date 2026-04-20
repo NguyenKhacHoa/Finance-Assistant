@@ -12,6 +12,7 @@ import { NumericFormat } from 'react-number-format';
 import confetti from 'canvas-confetti';
 import { formatVND } from '../../utils/format';
 import { notificationBus } from '../../utils/notificationBus';
+import DepositHistory from '../widgets/DepositHistory';
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -99,13 +100,21 @@ export default function IncomePage() {
   // Distribution submit
   const [distributeError, setDistributeError] = useState<string | null>(null);
 
-  // ── Fetch pockets ─────────────────────────────────────────
+  // ── Fetch pockets & stats ──────────────────────────────────
   const { data: allPockets = [], isLoading: loadingPockets } = useQuery({
     queryKey: ['pockets'],
     queryFn: () => authFetch<Pocket[]>('/pockets', {}, token),
     enabled: !!token,
   });
   const pockets = allPockets.filter((p) => p.name !== 'Tiền chưa vào hũ');
+
+  const { data: stats } = useQuery({
+    queryKey: ['stats'],
+    queryFn: () => authFetch<any>('/finance/stats', {}, token),
+    enabled: !!token,
+  });
+  const unallocatedBalance = Number(stats?.unallocatedBalance || 0);
+  const pocketTotalBalance = pockets.reduce((sum, p) => sum + Number(p.balance), 0);
 
   // Init percentages from DB
   useEffect(() => {
@@ -139,7 +148,6 @@ export default function IncomePage() {
   const activeAmounts = allocTab === 'ai' && aiReady ? aiAmounts : manualAmounts;
   const totalAllocated = Object.values(activeAmounts).reduce((s, v) => s + v, 0);
   const surplus = Math.max(0, depositedAmount - totalAllocated);
-  const totalCustomPct = Object.values(customPct).reduce((s, v) => s + v, 0);
 
   // ─────────────────────────────────────────────────────────
   // Handler: Deposit (Step 1 → Step deposit_success)
@@ -244,6 +252,14 @@ export default function IncomePage() {
 
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       queryClient.invalidateQueries({ queryKey: ['pockets'] });
+
+      // Thông báo phân bổ thành công với số tiền (màu xanh +)
+      notificationBus.push({
+        type: 'income',
+        message: `Đã phân bổ vào ${allocs.length} hũ tài chính.`,
+        amount: totalAllocated,
+      });
+
       setStep('done');
       setTimeout(() => navigate('/dashboard'), 2500);
     } catch (err: any) {
@@ -287,7 +303,8 @@ export default function IncomePage() {
   // RENDER
   // ─────────────────────────────────────────────────────────
   return (
-    <div className="max-w-2xl mx-auto pb-16 relative">
+    <div className="max-w-6xl mx-auto pb-16 relative grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+      <div className="lg:col-span-2 relative">
 
       {/* ══════════════════════════════════════════════════════
           DONE OVERLAY
@@ -688,6 +705,10 @@ export default function IncomePage() {
                       const amt = manualAmounts[p.id] ?? 0;
                       const isAmtMode = editMode[p.id] === 'amount';
                       const barW = depositedAmount > 0 ? Math.min(100, (amt / depositedAmount) * 100) : 0;
+                      
+                      const maxCapacity = (pocketTotalBalance + unallocatedBalance) * (Number(p.percentage) / 100);
+                      const projectedBalance = Number(p.balance) + amt;
+                      const isExceeded = maxCapacity > 0 && projectedBalance > maxCapacity;
 
                       return (
                         <motion.div
@@ -695,8 +716,12 @@ export default function IncomePage() {
                           initial={{ opacity: 0, y: 8 }}
                           animate={{ opacity: 1, y: 0 }}
                           transition={{ delay: i * 0.04 }}
-                          className="rounded-2xl overflow-hidden"
-                          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
+                          className="rounded-2xl overflow-hidden transition-all"
+                          style={{
+                            background: 'var(--bg-surface)',
+                            border: `1px solid ${isExceeded ? '#ef4444' : 'var(--border)'}`,
+                            boxShadow: isExceeded ? '0 0 15px rgba(239,68,68,0.1)' : 'none'
+                          }}
                         >
                           <div className="h-0.5" style={{ background: color }} />
                           <div className="p-5 space-y-3">
@@ -788,6 +813,21 @@ export default function IncomePage() {
                                   }}
                                 />
                               </div>
+                              {isExceeded && (
+                                <motion.div
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: 'auto' }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  className="col-span-2 mt-1"
+                                >
+                                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                                    <AlertCircle size={13} className="text-red-500 shrink-0" />
+                                    <span className="text-[11px] font-bold text-red-500">
+                                      Vượt hạn mức hũ — tối đa còn thêm {formatVND(Math.max(0, Math.floor(maxCapacity - Number(p.balance))))}
+                                    </span>
+                                  </div>
+                                </motion.div>
+                              )}
                             </div>
                           </div>
                         </motion.div>
@@ -977,31 +1017,54 @@ export default function IncomePage() {
             </AnimatePresence>
 
             {/* Submit */}
-            <motion.button
-              onClick={handleDistribute}
-              disabled={
-                totalAllocated <= 0 ||
-                totalAllocated > depositedAmount ||
-                step === 'distributing' ||
-                (allocTab === 'ai' && !aiReady)
-              }
-              whileHover={{ scale: 1.01 }}
-              whileTap={{ scale: 0.98 }}
-              className="w-full py-5 rounded-2xl font-black text-base flex items-center justify-center gap-2 transition-all disabled:opacity-35 shadow-2xl"
-              style={{
-                background: 'linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%)',
-                color: '#020d1a',
-              }}
-            >
-              {step === 'distributing' ? (
-                <><Loader2 size={20} className="animate-spin" /> Đang phân bổ...</>
-              ) : (
-                <>Xác nhận phân bổ {formatVND(totalAllocated)} <ArrowRight size={18} /></>
-              )}
-            </motion.button>
+            {(() => {
+              const isExceededOverall = allocTab === 'manual' && pockets.some(p => {
+                const maxCapacity = (pocketTotalBalance + unallocatedBalance) * (Number(p.percentage) / 100);
+                return maxCapacity > 0 && (Number(p.balance) + (manualAmounts[p.id] ?? 0)) > maxCapacity;
+              });
+
+              return (
+                <motion.button
+                  onClick={handleDistribute}
+                  disabled={
+                    totalAllocated <= 0 ||
+                    totalAllocated > depositedAmount ||
+                    step === 'distributing' ||
+                    (allocTab === 'ai' && !aiReady) ||
+                    isExceededOverall
+                  }
+                  whileHover={!isExceededOverall ? { scale: 1.01 } : {}}
+                  whileTap={!isExceededOverall ? { scale: 0.98 } : {}}
+                  className={`w-full py-5 rounded-2xl font-black text-base flex items-center justify-center gap-2 transition-all shadow-2xl ${isExceededOverall ? 'opacity-40 grayscale pointer-events-none' : 'disabled:opacity-35'}`}
+                  style={{
+                    background: 'linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%)',
+                    color: '#020d1a',
+                  }}
+                >
+                  {step === 'distributing' ? (
+                    <><Loader2 size={20} className="animate-spin" /> Đang phân bổ...</>
+                  ) : isExceededOverall ? (
+                    <><AlertCircle size={20} /> Sửa lỗi vượt giới hạn để tiếp tục</>
+                  ) : (
+                    <>Xác nhận phân bổ {formatVND(totalAllocated)} <ArrowRight size={18} /></>
+                  )}
+                </motion.button>
+              );
+            })()}
           </motion.div>
         )}
       </AnimatePresence>
+      
+      </div> {/* End col-span-2 */}
+
+      <div className="lg:col-span-1 hidden lg:block sticky top-8">
+        <DepositHistory />
+      </div>
+
+      <div className="lg:hidden block col-span-1 mt-8">
+        <DepositHistory />
+      </div>
+
     </div>
   );
 }
