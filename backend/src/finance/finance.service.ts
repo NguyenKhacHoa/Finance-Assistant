@@ -351,35 +351,111 @@ export class FinanceService {
         });
       }
 
-      // ── B3: Auto-Deduct chi phí cố định ───────────────────────────────
+      // ── B3: Auto-Deduct chi phí cố định (trả tiền thực tế + re-lock kỳ tiếp) ──
+      // Logic: với mỗi expense autoDeduct:
+      //   - Có pocketId: trừ balance hũ; lockedAmount giữ nguyên (= đã trả + tự re-lock cho kỳ sau)
+      //   - Không có pocketId: trừ từ "Tiền chưa vào hũ"; giữ user.lockedAmount
+      //   - Nếu balance sau trả < lockedAmount → giảm lockedAmount phần chênh lệch
       const fixedExpenses = await tx.fixedExpense.findMany({ where: { userId } });
-      const totalFixed = fixedExpenses
-        .filter((fe) => fe.autoDeduct)
-        .reduce((sum, fe) => sum + Number(fe.amount), 0);
 
       for (const fe of fixedExpenses) {
         if (!fe.autoDeduct) continue;
-        await tx.transaction.create({
-          data: {
-            userId,
-            pocketId: null,
-            amount: Number(fe.amount),
-            type: 'EXPENSE',
-            title: `Tự động thanh toán phí cố định: ${fe.title}`,
-            category: 'Utility',
-            createdAt: txTimestamp,
-          },
-        });
-      }
+        const feAmount = Number(fe.amount);
 
-      // ── B4: Cập nhật unallocatedBalance ròng ──────────────────────────
-      // Surplus đã được chuyển vào hũ "Tiền chưa vào hũ", nên không cộng vào unallocatedBalance nữa.
-      // Dùng unallocatedBalance để trả chi phí cố định.
-      const unallocatedChange = -totalFixed;
-      await (tx as any).user.update({
-        where: { id: userId },
-        data: { unallocatedBalance: { increment: unallocatedChange } },
-      });
+        if (fe.pocketId) {
+          // ── Có gắn hũ: lấy snapshot mới nhất sau khi đã nạp lương ──
+          const freshPocket = await (tx as any).pocket.findUnique({ where: { id: fe.pocketId } });
+          if (!freshPocket) continue;
+          const freshBalance = Number(freshPocket.balance);
+
+          if (freshBalance < feAmount) {
+            this.logger.warn(
+              `[distributeSalary] Hũ "${freshPocket.name}" không đủ tiền (${freshBalance.toLocaleString()} VNĐ) để auto-deduct "${fe.title}" (${feAmount.toLocaleString()} VNĐ). Bỏ qua.`,
+            );
+            continue;
+          }
+
+          // Trừ balance thực tế
+          const newBalance = freshBalance - feAmount;
+          await (tx as any).pocket.update({
+            where: { id: fe.pocketId },
+            data: { balance: { decrement: feAmount } },
+          });
+
+          // Re-lock cho kỳ tiếp theo:
+          // Nếu newBalance >= feAmount → lockedAmount giữ nguyên (net 0: -lock cũ +lock mới)
+          // Nếu newBalance < feAmount → không đủ re-lock toàn bộ → giảm lockedAmount phần thiếu
+          const currentLocked = Number(freshPocket.lockedAmount);
+          if (newBalance < feAmount && currentLocked > 0) {
+            const deficit = feAmount - newBalance;
+            const decrementLock = Math.min(deficit, currentLocked);
+            await (tx as any).pocket.update({
+              where: { id: fe.pocketId },
+              data: { lockedAmount: { decrement: decrementLock } },
+            });
+          }
+
+          // Tạo EXPENSE transaction gắn đúng hũ
+          await (tx as any).transaction.create({
+            data: {
+              userId,
+              pocketId: fe.pocketId,
+              amount: feAmount,
+              type: 'EXPENSE',
+              source: 'SYSTEM',
+              title: `Tự động thanh toán phí cố định: ${fe.title}`,
+              category: 'Utility',
+              createdAt: txTimestamp,
+              metadata: { action: 'auto_deduct_fixed_expense', expenseId: fe.id },
+            },
+          });
+
+        } else {
+          // ── Không gắn hũ: trừ từ "Tiền chưa vào hũ" → user.lockedAmount ──
+          const unallocPocket = await (tx as any).pocket.findFirst({
+            where: { userId, name: 'Tiền chưa vào hũ' },
+          });
+
+          if (!unallocPocket || Number(unallocPocket.balance) < feAmount) {
+            this.logger.warn(
+              `[distributeSalary] "Tiền chưa vào hũ" không đủ để auto-deduct "${fe.title}" (${feAmount.toLocaleString()} VNĐ). Bỏ qua.`,
+            );
+            continue;
+          }
+
+          const newUnallocBalance = Number(unallocPocket.balance) - feAmount;
+          await (tx as any).pocket.update({
+            where: { id: unallocPocket.id },
+            data: { balance: { decrement: feAmount } },
+          });
+
+          // Kiểm tra re-lock user.lockedAmount
+          const userSnap = await (tx as any).user.findUnique({ where: { id: userId } });
+          const currentUserLock = Number(userSnap?.lockedAmount || 0);
+          if (newUnallocBalance < feAmount && currentUserLock > 0) {
+            const deficit = feAmount - newUnallocBalance;
+            const decrementLock = Math.min(deficit, currentUserLock);
+            await (tx as any).user.update({
+              where: { id: userId },
+              data: { lockedAmount: { decrement: decrementLock } },
+            });
+          }
+
+          await (tx as any).transaction.create({
+            data: {
+              userId,
+              pocketId: unallocPocket.id,
+              amount: feAmount,
+              type: 'EXPENSE',
+              source: 'SYSTEM',
+              title: `Tự động thanh toán phí cố định: ${fe.title}`,
+              category: 'Utility',
+              createdAt: txTimestamp,
+              metadata: { action: 'auto_deduct_fixed_expense', expenseId: fe.id },
+            },
+          });
+        }
+      }
 
       return {
         success: true,
@@ -389,8 +465,6 @@ export class FinanceService {
           totalSalary: safeTotal,
           totalAllocated,
           surplus,
-          fixedExpensesDeducted: totalFixed,
-          unallocatedChange,
           distributions: distributions.map((d) => ({
             pocketId: d.pocketId,
             name: d.name,
@@ -448,19 +522,64 @@ export class FinanceService {
         data: { balance: { increment: safeAmount } },
       });
 
-      // Tạo transaction record
+      // Tạo transaction record — source: BANK để phân biệt với phân bổ nội bộ
       const transaction = await (tx as any).transaction.create({
         data: {
           userId,
           pocketId: unallocatedPocket.id,
           amount: safeAmount,
           type: 'INCOME',
+          source: 'BANK',
           title: note || `Nạp tiền vào tài khoản`,
           category: 'Other',
           createdAt: txTimestamp,
           metadata: { source: 'direct_deposit', depositedAt: txTimestamp.toISOString() },
         },
       });
+
+      // ── Tự động ưu tiên re-lock cho chi phí cố định sau khi nạp tiền ──
+      // Kiểm tra: có fixed expenses thiếu lock (lockedAmount thấp hơn mức cần) không?
+
+      // 1. Re-lock cho pocket "Tiền chưa vào hũ" (nếu có expense gắn vào pocket này)
+      const pocketExpenses = await (tx as any).fixedExpense.findMany({
+        where: { userId, pocketId: unallocatedPocket.id },
+      });
+      if (pocketExpenses.length > 0) {
+        const neededPocketLock = pocketExpenses.reduce((s: number, fe: any) => s + Number(fe.amount), 0);
+        const freshPocket = await (tx as any).pocket.findUnique({ where: { id: unallocatedPocket.id } });
+        const currentPocketLock = Number(freshPocket?.lockedAmount || 0);
+        if (currentPocketLock < neededPocketLock) {
+          const canLock = Math.min(neededPocketLock - currentPocketLock, Number(freshPocket?.balance || 0) - currentPocketLock);
+          if (canLock > 0) {
+            await (tx as any).pocket.update({
+              where: { id: unallocatedPocket.id },
+              data: { lockedAmount: { increment: canLock } },
+            });
+            this.logger.log(`[depositToUnallocated] Re-lock ${canLock.toLocaleString()} VNĐ cho pocket "Tiền chưa vào hũ"`);
+          }
+        }
+      }
+
+      // 2. Re-lock user.lockedAmount (cho expenses không gắn hũ nào)
+      const userExpenses = await (tx as any).fixedExpense.findMany({
+        where: { userId, pocketId: null },
+      });
+      if (userExpenses.length > 0) {
+        const neededUserLock = userExpenses.reduce((s: number, fe: any) => s + Number(fe.amount), 0);
+        const userSnap = await (tx as any).user.findUnique({ where: { id: userId } });
+        const currentUserLock = Number(userSnap?.lockedAmount || 0);
+        if (currentUserLock < neededUserLock) {
+          const totalUnallocNow = Number(updatedPocket.balance) + Number(userSnap?.unallocatedBalance || 0);
+          const canLock = Math.min(neededUserLock - currentUserLock, Math.max(0, totalUnallocNow - currentUserLock));
+          if (canLock > 0) {
+            await (tx as any).user.update({
+              where: { id: userId },
+              data: { lockedAmount: { increment: canLock } },
+            });
+            this.logger.log(`[depositToUnallocated] Re-lock user.lockedAmount +${canLock.toLocaleString()} VNĐ`);
+          }
+        }
+      }
 
       return {
         success: true,
@@ -565,6 +684,8 @@ export class FinanceService {
       const totalAssets = pocketTotalBalance + unallocatedTotalTx;
 
       // Cộng tiền vào từng hũ đích + ghi transaction
+      // Soft-cap: nếu hũ gần đầy, chỉ nạp tới giới hạn, phần thừa hoàn lại unallocated
+      let totalSoftCapExcess = 0;
       for (const alloc of allocations) {
         const safeAmt = Math.round(alloc.amount);
         if (safeAmt <= 0) continue;
@@ -572,24 +693,37 @@ export class FinanceService {
         const pocket = allPocketsTx.find((p: any) => p.id === alloc.pocketId);
         if (!pocket) continue;
 
-        // Hard-cap: dùng calculateMaxCapacity với snapshot hiện tại trong transaction
-        const maxCapacity = this.calculateMaxCapacity(
-          pocketTotalBalance,
-          unallocatedTotalTx,
-          Number(pocket.percentage),
-        );
-        const projectedBalance = Number(pocket.balance) + safeAmt;
-
-        if (projectedBalance > maxCapacity) {
-          throw new BadRequestException(
-            `Hũ [${pocket.name}] đã đầy theo tỷ lệ ${pocket.percentage}%. ` +
-            `Hãy tăng tỷ lệ % để nạp thêm.`,
+        // Soft-cap: tính maxCapacity dựa trên snapshot hiện tại trong transaction
+        // Chỉ áp dụng nếu pocket có percentage > 0 (hũ có tỷ lệ)
+        let actualAmt = safeAmt;
+        if (Number(pocket.percentage) > 0) {
+          const maxCapacity = this.calculateMaxCapacity(
+            pocketTotalBalance,
+            unallocatedTotalTx,
+            Number(pocket.percentage),
           );
+          const projectedBalance = Number(pocket.balance) + safeAmt;
+
+          if (projectedBalance > maxCapacity) {
+            // Soft overflow: chỉ nạp tới mức tối đa, thừa hoàn lại unallocated
+            actualAmt = Math.max(0, Math.floor(maxCapacity - Number(pocket.balance)));
+            const excess = safeAmt - actualAmt;
+            totalSoftCapExcess += excess;
+            this.logger.log(
+              `[distributeFromUnallocated] Soft-cap hũ "${pocket.name}": ` +
+              `nạp ${actualAmt.toLocaleString()} VNĐ, thừa ${excess.toLocaleString()} VNĐ → hoàn unallocated`,
+            );
+          }
+        }
+
+        if (actualAmt <= 0) {
+          totalSoftCapExcess += safeAmt; // toàn bộ hoàn lại
+          continue;
         }
 
         const updated = await (tx as any).pocket.update({
           where: { id: alloc.pocketId },
-          data: { balance: { increment: safeAmt } },
+          data: { balance: { increment: actualAmt } },
         });
         updatedPockets.push(updated);
 
@@ -597,7 +731,7 @@ export class FinanceService {
           data: {
             userId,
             pocketId: alloc.pocketId,
-            amount: safeAmt,
+            amount: actualAmt,
             type: 'TRANSFER',
             source: 'SYSTEM',
             title: `Phân bổ vào hũ: ${pocketNameMap[alloc.pocketId]}`,
@@ -609,6 +743,23 @@ export class FinanceService {
             },
           },
         });
+      }
+
+      // Hoàn tiền thừa do soft-cap về pocket unallocated
+      if (totalSoftCapExcess > 0) {
+        this.logger.log(`[distributeFromUnallocated] Hoàn ${totalSoftCapExcess.toLocaleString()} VNĐ vào Tiền chưa vào hũ do soft-cap`);
+        const unallocPocket = await (tx as any).pocket.findFirst({ where: { userId, name: 'Tiền chưa vào hũ' } });
+        if (unallocPocket) {
+          await (tx as any).pocket.update({
+            where: { id: unallocPocket.id },
+            data: { balance: { increment: totalSoftCapExcess } },
+          });
+        } else {
+          await (tx as any).user.update({
+            where: { id: userId },
+            data: { unallocatedBalance: { increment: totalSoftCapExcess } },
+          });
+        }
       }
 
       return {

@@ -615,6 +615,20 @@ ${goalsCtx}`;
             properties: { goalId: { type: SchemaType.STRING } },
             required: ['goalId']
           }
+        },
+        {
+          name: 'create_pocket',
+          description: 'Tạo một hũ tài chính mới cho người dùng.',
+          parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+              name:       { type: SchemaType.STRING, description: 'Tên hũ (ví dụ: Thiết yếu, Giáo dục)' },
+              percentage: { type: SchemaType.NUMBER, description: 'Tỷ lệ phần trăm thu nhập phân bổ vào hũ (0-100)' },
+              balance:    { type: SchemaType.NUMBER, description: 'Số dư ban đầu (mặc định 0)' },
+              isEssential: { type: SchemaType.BOOLEAN, description: 'Hũ thiết yếu hay không' },
+            },
+            required: ['name', 'percentage']
+          }
         }
       ]
     }];
@@ -724,6 +738,27 @@ ${goalsCtx}`;
               actionType: 'delete_goal'
            });
            actionsExecuted.push({ tool: call.name, args, result: 'success' });
+        } else if (call.name === 'create_pocket') {
+           const args = call.args as any;
+           const { Prisma } = await import('@prisma/client');
+           await this.prisma.pocket.create({
+             data: {
+               userId,  // ← userId luôn lấy từ context (JWT), không phải từ AI
+               name: args.name,
+               percentage: new Prisma.Decimal(args.percentage ?? 0),
+               balance: new Prisma.Decimal(args.balance ?? 0),
+               isEssential: args.isEssential ?? false,
+             },
+           });
+           this.alertsGateway?.sendAiActionAlert(userId, {
+              title: 'Tạo hũ thành công!',
+              summary: `Hũ "${args.name}" (${args.percentage ?? 0}%) đã được tạo.`,
+              actionType: 'create_pocket'
+           });
+           actionsExecuted.push({ tool: call.name, args, result: 'success' });
+        } else if (call.name === 'get_financial_status') {
+           // Tool chỉ dùng để trigger AI đọc lại context, không cần thao tác DB
+           actionsExecuted.push({ tool: call.name, args: {}, result: 'context_provided' });
         }
 
         const funcResponse = await chat.sendMessage([{

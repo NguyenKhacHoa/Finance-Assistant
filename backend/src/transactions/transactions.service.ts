@@ -57,7 +57,11 @@ export class TransactionsService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     const unallocatedBalance = Math.max(0, Number(unallocatedPocket?.balance || 0) + Number(user?.unallocatedBalance || 0));
 
-    return { income, expense, balance: income - expense, totalBalance, unallocatedBalance, totalGoalFunded };
+    // Tổng tiền bị khóa
+    const totalPocketLocked = pockets.reduce((s, p) => s + Number(p.lockedAmount), 0);
+    const totalLockedAmount = totalPocketLocked + Number(user?.lockedAmount || 0);
+
+    return { income, expense, balance: income - expense, totalBalance, unallocatedBalance, totalGoalFunded, totalLockedAmount };
   }
 
   // ── GET chart data (income/expense grouped by day) ────────────
@@ -173,11 +177,11 @@ export class TransactionsService {
       throw new ForbiddenException(blockReason);
     }
 
-    // ── Kiểm tra số dư của CHÍNH HŨ ĐƯỢC CHỌN ──
-    if (Number(pocket.balance) < dto.amount) {
+    // ── Kiểm tra số dư khả dụng của CHÍNH HŨ ĐƯỢC CHỌN ──
+    const availableBalance = Number(pocket.balance) - Number(pocket.lockedAmount);
+    if (availableBalance < dto.amount) {
       throw new BadRequestException(
-        `Hũ "${pocket.name}" không đủ số dư. Hiện có: ${Number(pocket.balance).toLocaleString()} VNĐ, ` +
-        `cần: ${dto.amount.toLocaleString()} VNĐ.`
+        `Hũ "${pocket.name}" không đủ số dư khả dụng. Hiện có: ${Number(pocket.balance).toLocaleString()} VNĐ (trong đó ${Number(pocket.lockedAmount).toLocaleString()} VNĐ bị khóa cho chi phí cố định). Cần: ${dto.amount.toLocaleString()} VNĐ.`
       );
     }
 
@@ -226,6 +230,10 @@ export class TransactionsService {
             });
           } else if (existing.type === 'EXPENSE') {
             // EXPENSE: cũ trừ hũ → trừ thêm delta (delta âm = refund)
+            const availableBalance = Number(pocket.balance) - Number(pocket.lockedAmount);
+            if (delta > 0 && availableBalance < delta) {
+               throw new BadRequestException(`Hũ không đủ số dư khả dụng sau khi chỉnh sửa. Đang bị khóa: ${Number(pocket.lockedAmount).toLocaleString()} VNĐ.`);
+            }
             const newBalance = Number(pocket.balance) - delta;
             if (newBalance < 0) throw new BadRequestException('Số dư hũ không đủ sau khi chỉnh sửa.');
             await (tx as any).pocket.update({

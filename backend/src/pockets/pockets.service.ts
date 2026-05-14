@@ -47,18 +47,63 @@ export class PocketsService {
     if (!pocket || pocket.userId !== userId) throw new BadRequestException('Hũ không hợp lệ');
 
     const pocketBalance = Number(pocket.balance);
+    const pocketLockedAmount = Number(pocket.lockedAmount);
 
     await this.prisma.$transaction(async (tx) => {
-      // 1. Hoàn toàn bộ balance của hũ vào unallocatedBalance của User
-      //    Phải hoàn tiền TRƯỚC khi xóa để tránh vi phạm foreign key SetNull
+      // ── 0. Xử lý lock của các chi phí cố định gắn vào hũ này ──
+      // Khi hũ bị xóa, pocketId của FixedExpense sẽ thành null (SetNull).
+      // Phải chuyển lockedAmount từ pocket sang user.lockedAmount để duy trì nghĩa vụ tài chính.
+      if (pocketLockedAmount > 0) {
+        const linkedExpenses = await (tx as any).fixedExpense.findMany({
+          where: { userId, pocketId },
+        });
+
+        if (linkedExpenses.length > 0) {
+          // Kiểm tra user có đủ unallocatedBalance để tiếp nhận lock không
+          const userRecord = await (tx as any).user.findUnique({ where: { id: userId } });
+          const userUnallocated = Number(userRecord?.unallocatedBalance || 0) + pocketBalance; // bao gồm cả tiền sắp hoàn về
+          const userCurrentLock = Number(userRecord?.lockedAmount || 0);
+          const userAvailableForLock = Math.max(0, userUnallocated - userCurrentLock);
+
+          // Chuyển lock tương ứng với các expense sẽ bị mất hũ
+          const totalExpenseLock = linkedExpenses.reduce((s: number, fe: any) => s + Number(fe.amount), 0);
+          const lockToTransfer = Math.min(totalExpenseLock, userAvailableForLock);
+
+          if (lockToTransfer > 0) {
+            await (tx as any).user.update({
+              where: { id: userId },
+              data: { lockedAmount: { increment: lockToTransfer } },
+            });
+          }
+
+          // Ghi system transaction ghi nhận việc chuyển lock
+          await (tx as any).transaction.create({
+            data: {
+              userId,
+              pocketId,
+              amount: lockToTransfer,
+              type: 'SYSTEM',
+              source: 'SYSTEM',
+              title: `Chuyển khóa tiền từ hũ "${pocket.name}" sang tài khoản khi xóa hũ`,
+              category: 'Other',
+              metadata: {
+                action: 'transfer_lock_on_pocket_delete',
+                originalLocked: pocketLockedAmount,
+                lockTransferred: lockToTransfer,
+                affectedExpenses: linkedExpenses.map((fe: any) => fe.id),
+              },
+            },
+          });
+        }
+      }
+
+      // ── 1. Hoàn toàn bộ balance của hũ vào unallocatedBalance của User ──
       if (pocketBalance > 0) {
-        // Bước 1a: Cộng balance vào unallocatedBalance của User
         await tx.user.update({
           where: { id: userId },
           data: { unallocatedBalance: { increment: pocketBalance } },
         });
 
-        // Bước 1b: Tạo bản ghi lịch sử giao dịch (type: SYSTEM)
         await (tx as any).transaction.create({
           data: {
             userId,
@@ -72,7 +117,7 @@ export class PocketsService {
         });
       }
 
-      // 2. Xóa hũ sau khi đã hoàn tiền và tạo lịch sử thành công
+      // ── 2. Xóa hũ (FixedExpense.pocketId → null tự động qua SetNull) ──
       await tx.pocket.delete({ where: { id: pocketId } });
     });
 

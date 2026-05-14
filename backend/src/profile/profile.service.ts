@@ -28,14 +28,49 @@ export class ProfileService {
     autoDeduct: boolean,
     pocketId?: string,
   ) {
-    return this.prisma.fixedExpense.create({
-      data: {
-        userId,
-        title,
-        amount,
-        autoDeduct,
-        ...(pocketId && { pocketId }),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      // ── 1. Kiểm tra hũ và số dư khả dụng ──
+      if (pocketId) {
+        const pocket = await (tx as any).pocket.findUnique({ where: { id: pocketId } });
+        if (!pocket || pocket.userId !== userId) {
+          throw new BadRequestException('Hũ tài chính không hợp lệ.');
+        }
+        const availableBalance = Number(pocket.balance) - Number(pocket.lockedAmount);
+        if (availableBalance < amount) {
+          throw new BadRequestException(
+            `Hũ "${pocket.name}" không đủ số dư khả dụng để thiết lập chi phí này (Khả dụng: ${availableBalance.toLocaleString()} VNĐ). Vui lòng chọn hũ khác hoặc nạp thêm tiền.`,
+          );
+        }
+        // Tăng lockedAmount của hũ
+        await (tx as any).pocket.update({
+          where: { id: pocketId },
+          data: { lockedAmount: { increment: amount } },
+        });
+      } else {
+        const user = await (tx as any).user.findUnique({ where: { id: userId } });
+        const availableBalance = Number(user.unallocatedBalance) - Number(user.lockedAmount);
+        if (availableBalance < amount) {
+          throw new BadRequestException(
+            `Tiền chưa vào hũ không đủ số dư khả dụng để thiết lập chi phí này (Khả dụng: ${availableBalance.toLocaleString()} VNĐ). Vui lòng chọn hũ khác hoặc nạp thêm tiền.`,
+          );
+        }
+        // Tăng lockedAmount của User
+        await (tx as any).user.update({
+          where: { id: userId },
+          data: { lockedAmount: { increment: amount } },
+        });
+      }
+
+      // ── 2. Tạo chi phí cố định ──
+      return (tx as any).fixedExpense.create({
+        data: {
+          userId,
+          title,
+          amount,
+          autoDeduct,
+          ...(pocketId && { pocketId }),
+        },
+      });
     });
   }
 
@@ -47,28 +82,116 @@ export class ProfileService {
     autoDeduct: boolean,
     pocketId?: string,
   ) {
-    const expense = await this.prisma.fixedExpense.findUnique({ where: { id: expenseId } });
-    if (!expense || expense.userId !== userId) {
-      throw new BadRequestException('Expense không tồn tại hoặc không có quyền.');
-    }
-    return this.prisma.fixedExpense.update({
-      where: { id: expenseId },
-      data: {
-        title,
-        amount,
-        autoDeduct,
-        ...(pocketId && { pocketId }),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const expense = await (tx as any).fixedExpense.findUnique({ where: { id: expenseId } });
+      if (!expense || expense.userId !== userId) {
+        throw new BadRequestException('Expense không tồn tại hoặc không có quyền.');
+      }
+
+      const oldAmount = Number(expense.amount);
+      const oldPocketId = expense.pocketId;
+
+      // ── Giải phóng lock cũ ──
+      if (oldPocketId) {
+        await (tx as any).pocket.update({
+          where: { id: oldPocketId },
+          data: { lockedAmount: { decrement: oldAmount } },
+        });
+      } else {
+        await (tx as any).user.update({
+          where: { id: userId },
+          data: { lockedAmount: { decrement: oldAmount } },
+        });
+      }
+
+      // ── Áp dụng lock mới (với giá trị snapshot mới nhất) ──
+      if (pocketId) {
+        const pocket = await (tx as any).pocket.findUnique({ where: { id: pocketId } });
+        const availableBalance = Number(pocket.balance) - Number(pocket.lockedAmount);
+        if (availableBalance < amount) {
+          throw new BadRequestException(
+            `Hũ "${pocket.name}" không đủ số dư khả dụng để cập nhật chi phí này (Khả dụng: ${availableBalance.toLocaleString()} VNĐ).`,
+          );
+        }
+        await (tx as any).pocket.update({
+          where: { id: pocketId },
+          data: { lockedAmount: { increment: amount } },
+        });
+      } else {
+        const user = await (tx as any).user.findUnique({ where: { id: userId } });
+        const availableBalance = Number(user.unallocatedBalance) - Number(user.lockedAmount);
+        if (availableBalance < amount) {
+          throw new BadRequestException(
+            `Tiền chưa vào hũ không đủ số dư khả dụng để cập nhật chi phí này (Khả dụng: ${availableBalance.toLocaleString()} VNĐ).`,
+          );
+        }
+        await (tx as any).user.update({
+          where: { id: userId },
+          data: { lockedAmount: { increment: amount } },
+        });
+      }
+
+      // ── Cập nhật chi phí cố định ──
+      return (tx as any).fixedExpense.update({
+        where: { id: expenseId },
+        data: {
+          title,
+          amount,
+          autoDeduct,
+          pocketId: pocketId || null,
+        },
+      });
     });
   }
 
   async deleteFixedExpense(userId: string, expenseId: string) {
-    const expense = await this.prisma.fixedExpense.findUnique({ where: { id: expenseId } });
-    if (!expense || expense.userId !== userId) {
-      throw new BadRequestException('Expense không tồn tại hoặc không có quyền.');
-    }
-    await this.prisma.fixedExpense.delete({ where: { id: expenseId } });
-    return { success: true };
+    return this.prisma.$transaction(async (tx) => {
+      const expense = await (tx as any).fixedExpense.findUnique({
+        where: { id: expenseId },
+        include: { pocket: true },
+      });
+
+      if (!expense || expense.userId !== userId) {
+        throw new BadRequestException('Expense không tồn tại hoặc không có quyền.');
+      }
+
+      const amountToUnlock = Number(expense.amount);
+
+      // ── Giải phóng lock cũ ──
+      if (expense.pocketId) {
+        await (tx as any).pocket.update({
+          where: { id: expense.pocketId },
+          data: { lockedAmount: { decrement: amountToUnlock } },
+        });
+      } else {
+        await (tx as any).user.update({
+          where: { id: userId },
+          data: { lockedAmount: { decrement: amountToUnlock } },
+        });
+      }
+
+      // ── Tạo Transaction SYSTEM ghi nhận việc mở khóa tiền ──
+      await (tx as any).transaction.create({
+        data: {
+          userId,
+          pocketId: expense.pocketId || null,
+          amount: amountToUnlock,
+          type: 'SYSTEM',
+          source: 'SYSTEM',
+          title: `Giải phóng tiền khóa từ: ${expense.title}`,
+          category: 'Other',
+          metadata: {
+            action: 'unlock_fixed_expense',
+            expenseId: expense.id,
+          },
+        },
+      });
+
+      // ── Xóa chi phí cố định ──
+      await (tx as any).fixedExpense.delete({ where: { id: expenseId } });
+
+      return { success: true, unlockedAmount: amountToUnlock };
+    });
   }
 
   // ===============================

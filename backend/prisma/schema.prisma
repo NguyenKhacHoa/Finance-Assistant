@@ -66,6 +66,9 @@ model User {
   /// Giảm khi: phân bổ vào hũ, nạp vào mục tiêu tiết kiệm.
   unallocatedBalance Decimal  @default(0)
 
+  /// Số tiền bị khóa cho các chi phí cố định (nếu không chọn hũ)
+  lockedAmount       Decimal  @default(0)
+
   // ── Auth ──────────────────────────────────────────────────
   passwordHash   String?   // null nếu đăng ký bằng Google / Phone OTP
   googleId       String?   @unique
@@ -120,6 +123,7 @@ model Pocket {
   shortName   String?
   percentage  Decimal
   balance     Decimal  @default(0)
+  lockedAmount Decimal @default(0) // Số tiền bị khóa cho chi phí cố định
   isEssential Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
